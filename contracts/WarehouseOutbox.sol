@@ -4,12 +4,16 @@ pragma solidity ^0.8.28;
 import {IRouterClient} from "@chainlink/contracts-ccip/contracts/interfaces/IRouterClient.sol";
 import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title WarehouseOutbox
-/// @notice Checkpoint 2: the source warehouse's shipping desk.
-/// @dev Hands a message to the CCIP router and pays the fee in LINK.
-///      Learning contract: no allowlists, limits, or pausing yet.
-contract WarehouseOutbox {
+/// @notice The source warehouse's shipping desk.
+/// @dev Two gates stand in front of a shipment:
+///      1. The caller must be an authorised shipper.
+///      2. The (destination chain, receiver) pair must be allowlisted.
+///      The desk pays CCIP fees from its own LINK balance, so shippers do not
+///      need to hold fee tokens themselves.
+contract WarehouseOutbox is Ownable {
     /// @notice The CCIP router on this chain (the loading dock).
     IRouterClient public immutable router;
 
@@ -18,6 +22,13 @@ contract WarehouseOutbox {
 
     /// @notice Gas the destination contract is allowed to spend on arrival.
     uint256 public constant DESTINATION_GAS_LIMIT = 200_000;
+
+    /// @notice Who may ship from this desk.
+    mapping(address account => bool allowed) public isShipper;
+
+    /// @notice Which (destination chain, receiving desk) pairs we ship to.
+    mapping(uint64 chainSelector => mapping(address receiver => bool allowed))
+        public allowedDestination;
 
     /// @notice Tracking numbers of every message this desk has shipped.
     bytes32[] public shippedMessageIds;
@@ -30,11 +41,42 @@ contract WarehouseOutbox {
         uint256 fee
     );
 
-    error NotEnoughFeeTokenBalance(uint256 balance, uint256 required);
+    event ShipperSet(address indexed account, bool allowed);
 
-    constructor(address router_, address feeToken_) {
+    event DestinationSet(
+        uint64 indexed destinationChainSelector,
+        address indexed receiver,
+        bool allowed
+    );
+
+    error NotEnoughFeeTokenBalance(uint256 balance, uint256 required);
+    error NotAShipper(address caller);
+    error DestinationNotAllowed(uint64 destinationChainSelector, address receiver);
+
+    modifier onlyShipper() {
+        if (!isShipper[msg.sender]) revert NotAShipper(msg.sender);
+        _;
+    }
+
+    constructor(address router_, address feeToken_) Ownable(msg.sender) {
         router = IRouterClient(router_);
         feeToken = IERC20(feeToken_);
+    }
+
+    /// @notice Allow (or stop allowing) an account to ship from this desk.
+    function setShipper(address account, bool allowed) external onlyOwner {
+        isShipper[account] = allowed;
+        emit ShipperSet(account, allowed);
+    }
+
+    /// @notice Allow (or stop allowing) one receiving desk on one chain.
+    function setDestination(
+        uint64 destinationChainSelector,
+        address receiver,
+        bool allowed
+    ) external onlyOwner {
+        allowedDestination[destinationChainSelector][receiver] = allowed;
+        emit DestinationSet(destinationChainSelector, receiver, allowed);
     }
 
     /// @notice Build the CCIP message this desk would ship.
@@ -70,12 +112,15 @@ contract WarehouseOutbox {
     }
 
     /// @notice Ship a text delivery to a warehouse on another chain.
-    /// @dev Anyone can call this in Checkpoint 2. Access control comes later.
     function shipDelivery(
         uint64 destinationChainSelector,
         address receiver,
         string calldata message
-    ) external returns (bytes32 messageId) {
+    ) external onlyShipper returns (bytes32 messageId) {
+        if (!allowedDestination[destinationChainSelector][receiver]) {
+            revert DestinationNotAllowed(destinationChainSelector, receiver);
+        }
+
         Client.EVM2AnyMessage memory evm2AnyMessage = buildMessage(receiver, message);
         evm2AnyMessage.feeToken = address(feeToken);
 

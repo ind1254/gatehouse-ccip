@@ -5,42 +5,17 @@ import {
   encodeAbiParameters,
   getAddress,
   keccak256,
-  parseAbi,
   parseAbiParameters,
   parseEther,
   toHex,
   zeroHash,
 } from "viem";
-
-/// The mock router always reports deliveries as coming from Ethereum Sepolia.
-const SEPOLIA_SELECTOR = 16015286601757825753n;
-
-const erc20Abi = parseAbi([
-  "function balanceOf(address account) view returns (uint256)",
-]);
-const mockRouterAbi = parseAbi(["function setFee(uint256 feeAmount)"]);
-
-/**
- * Stand up the whole cross-chain setup on one local blockchain:
- * a shipping desk, the CCIP network, and a receiving desk.
- */
-async function deployWarehouses() {
-  const { viem } = await network.create();
-
-  const ccip = await viem.deployContract("LocalCcipNetwork");
-  const [, sourceRouter, destinationRouter, , linkToken] =
-    await ccip.read.configuration();
-
-  const outbox = await viem.deployContract("WarehouseOutbox", [
-    sourceRouter,
-    linkToken,
-  ]);
-  const inbox = await viem.deployContract("CcipWarehouseInbox", [
-    destinationRouter,
-  ]);
-
-  return { viem, ccip, outbox, inbox, sourceRouter, linkToken };
-}
+import {
+  deployWarehouses,
+  erc20Abi,
+  mockRouterAbi,
+  SEPOLIA_SELECTOR,
+} from "../test-support/warehouses.js";
 
 describe("CCIP delivery, source warehouse to destination warehouse", function () {
   it("delivers the message through the router", async function () {
@@ -59,8 +34,7 @@ describe("CCIP delivery, source warehouse to destination warehouse", function ()
   });
 
   it("records the source warehouse and source chain, not the human who paid", async function () {
-    const { viem, outbox, inbox } = await deployWarehouses();
-    const [operator] = await viem.getWalletClients();
+    const { outbox, inbox, operator } = await deployWarehouses();
 
     await outbox.write.shipDelivery([
       SEPOLIA_SELECTOR,
@@ -140,8 +114,8 @@ describe("Router authentication", function () {
 
 describe("CCIP fees", function () {
   it("refuses to ship when the desk cannot pay the fee", async function () {
-    const { viem, outbox, inbox, sourceRouter } = await deployWarehouses();
-    const [operator] = await viem.getWalletClients();
+    const { viem, outbox, inbox, operator, sourceRouter } =
+      await deployWarehouses();
     const publicClient = await viem.getPublicClient();
 
     const hash = await operator.writeContract({
@@ -175,9 +149,8 @@ describe("CCIP fees", function () {
   });
 
   it("pays the fee in LINK once the desk is funded", async function () {
-    const { viem, ccip, outbox, inbox, sourceRouter, linkToken } =
+    const { viem, ccip, outbox, inbox, operator, sourceRouter, linkToken } =
       await deployWarehouses();
-    const [operator] = await viem.getWalletClients();
     const publicClient = await viem.getPublicClient();
 
     let hash = await operator.writeContract({

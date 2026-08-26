@@ -12,6 +12,7 @@
     "hardhat.config.ts",
     "test/**/*.ts",
     "scripts/**/*.ts",
+    "test-support/**/*.ts",
     "artifacts/**/*.d.ts"
   ]
 }
