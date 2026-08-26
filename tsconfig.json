@@ -8,5 +8,10 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["hardhat.config.ts", "test/**/*.ts", "scripts/**/*.ts"]
+  "include": [
+    "hardhat.config.ts",
+    "test/**/*.ts",
+    "scripts/**/*.ts",
+    "artifacts/**/*.d.ts"
+  ]
 }

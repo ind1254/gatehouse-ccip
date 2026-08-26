@@ -6,10 +6,12 @@
   "scripts": {
     "build": "hardhat build",
     "test": "hardhat test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "hardhat build && tsc --noEmit"
   },
   "devDependencies": {
+    "@chainlink/local": "^0.2.9",
     "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
+    "@openzeppelin/contracts": "^5.4.0",
     "@types/node": "^22.15.0",
     "hardhat": "^3.14.0",
     "typescript": "^5.8.3",
