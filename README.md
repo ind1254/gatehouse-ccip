@@ -188,10 +188,81 @@ the *bridge* is atomic. It is not. That gap between a committed source and a
 failed destination is exactly the in-flight state Checkpoints 5 and 6 have to
 handle.
 
+## Checkpoint 5: limits that hold regardless of who is asking
+
+Every defence so far authenticates a **caller**. All of them fail the same way:
+compromise something already on the allowlist and the gates wave you through.
+Checkpoint 5 adds controls that bound what *anyone* can do, including a
+compromised but perfectly valid sender.
+
+[`WarehouseControls.sol`](contracts/WarehouseControls.sol) holds the shared
+machinery and both desks inherit it.
+
+### A pause with a split key
+
+```solidity
+function pause() external {          // guardian OR owner
+function unpause() external onlyOwner;   // owner only
+```
+
+Stopping is a reflex and belongs on a fast, hot key. Restarting declares the
+emergency over and stays with the owner, which should be cold storage or a
+multisig. That asymmetry is the point.
+
+### A rolling-window rate limit
+
+```solidity
+struct Limit { bool enabled; uint256 amountPerWindow; uint256 windowSeconds; }
+```
+
+Limits are **opt-in via an explicit `enabled` flag** rather than inferred from a
+zero amount, mirroring how Chainlink's own rate limiter is configured.
+
+The zero address is a bucket for **delivery count**, not a token: every message
+spends 1 from it. That is what bounds a flood of individually-valid messages -
+fifty legitimate sends where replay protection has nothing to say, because fifty
+distinct message IDs are not duplicates.
+
+Both desks limit independently. The inbox limiting a sender it already trusts is
+the whole idea: `bounds a compromised but still-allowlisted sender at the inbox`.
+
+### A delay on large transfers
+
+Cargo at or above `largeTransferThreshold` is **held** rather than settled:
+
+```text
+arrives ──► totalHeld  ──(releaseDelay elapses)──► totalReceived
+                 │
+                 └── not withdrawable, not counted
+```
+
+`releaseCargo` is callable by **anyone** - releasing is the passage of time, not
+a privilege - but it is blocked while paused. And `withdrawCargo` subtracts held
+cargo first, so the owner cannot reach around the delay by simply withdrawing the
+tokens it guards.
+
+That combination gives the invariant this checkpoint exists for: **a pause stops
+new exposure without corrupting in-flight state.** `freezes held cargo while the
+desk is paused` proves it - the delay expires during the incident, and the value
+stays exactly where it was: not settled, not withdrawable, not lost.
+
+### A bug worth keeping in the history
+
+Adding these gates broke every cargo test with an empty `ReceiverError("0x")`.
+The cause was gas: a heavier receiver no longer fit in the 200,000 gas the
+message had bought. In production this fails **on arrival, after the fee is
+paid**, and needs manual re-execution.
+
+So `destinationGasLimit` is now a settable variable rather than a constant, with
+a comment saying why. Every gate added to the inbox has to be paid for in the
+source chain's gas budget, and that budget is set by the sender before the
+receiver ever runs.
+
 ### Still missing on purpose
 
-No pausing, no rate limits, and a single owner key that can change every
-allowlist and withdraw every token. Those are the next checkpoints.
+One owner key still controls both desks' allowlists, limits, thresholds, and
+withdrawals. Splitting that into roles - and putting a timelock in front of the
+dangerous ones - is the remaining structural weakness.
 
 ## Planned checkpoints
 
@@ -199,7 +270,7 @@ allowlist and withdraw every token. Those are the next checkpoints.
 2. ~~Source contract, router, and a locally simulated CCIP message.~~ Done.
 3. ~~Authentication of the source chain and sender; replay protection.~~ Done.
 4. ~~Test-token transfer and balance accounting.~~ Done.
-5. Pausing, rate limits, and large-transfer delays.
+5. ~~Pausing, rate limits, and large-transfer delays.~~ Done.
 6. Operator CLI, monitoring, reconciliation, and failure drills.
 
 ## Reference

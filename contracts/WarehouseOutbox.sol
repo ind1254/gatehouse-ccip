@@ -5,7 +5,7 @@ import {IRouterClient} from "@chainlink/contracts-ccip/contracts/interfaces/IRou
 import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {WarehouseControls} from "./WarehouseControls.sol";
 
 /// @title WarehouseOutbox
 /// @notice The source warehouse's shipping desk.
@@ -15,7 +15,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 ///      3. Cargo shipments must use an allowlisted token.
 ///      The desk pays CCIP fees from its own LINK balance, and ships cargo from
 ///      its own token balance, so shippers hold neither.
-contract WarehouseOutbox is Ownable {
+contract WarehouseOutbox is WarehouseControls {
     using SafeERC20 for IERC20;
 
     /// @notice The CCIP router on this chain (the loading dock).
@@ -25,7 +25,11 @@ contract WarehouseOutbox is Ownable {
     IERC20 public immutable feeToken;
 
     /// @notice Gas the destination contract is allowed to spend on arrival.
-    uint256 public constant DESTINATION_GAS_LIMIT = 200_000;
+    /// @dev Deliberately a variable, not a constant. Every gate added to the
+    ///      inbox costs destination gas, and a message whose gasLimit is too
+    ///      small fails ON ARRIVAL - after the fee is paid - and needs manual
+    ///      re-execution. This has to be re-tuned whenever the receiver grows.
+    uint256 public destinationGasLimit = 600_000;
 
     /// @notice Who may ship from this desk.
     mapping(address account => bool allowed) public isShipper;
@@ -67,6 +71,8 @@ contract WarehouseOutbox is Ownable {
 
     event TokenSet(address indexed token, bool allowed);
 
+    event DestinationGasLimitSet(uint256 gasLimit);
+
     error NotEnoughFeeTokenBalance(uint256 balance, uint256 required);
     error NotEnoughCargo(address token, uint256 balance, uint256 required);
     error NotAShipper(address caller);
@@ -79,7 +85,7 @@ contract WarehouseOutbox is Ownable {
         _;
     }
 
-    constructor(address router_, address feeToken_) Ownable(msg.sender) {
+    constructor(address router_, address feeToken_) WarehouseControls(msg.sender) {
         router = IRouterClient(router_);
         feeToken = IERC20(feeToken_);
     }
@@ -102,6 +108,12 @@ contract WarehouseOutbox is Ownable {
         emit DestinationSet(destinationChainSelector, receiver, allowed);
     }
 
+    /// @notice Set how much gas the destination desk may spend on arrival.
+    function setDestinationGasLimit(uint256 newGasLimit) external onlyOwner {
+        destinationGasLimit = newGasLimit;
+        emit DestinationGasLimitSet(newGasLimit);
+    }
+
     /// @notice Allow (or stop allowing) a token to be shipped as cargo.
     function setToken(address token, bool allowed) external onlyOwner {
         allowedToken[token] = allowed;
@@ -114,7 +126,7 @@ contract WarehouseOutbox is Ownable {
     function buildMessage(
         address receiver,
         string calldata message
-    ) public pure returns (Client.EVM2AnyMessage memory) {
+    ) public view returns (Client.EVM2AnyMessage memory) {
         return _buildMessage(receiver, message, new Client.EVMTokenAmount[](0));
     }
 
@@ -124,7 +136,7 @@ contract WarehouseOutbox is Ownable {
         string calldata message,
         address token,
         uint256 amount
-    ) public pure returns (Client.EVM2AnyMessage memory) {
+    ) public view returns (Client.EVM2AnyMessage memory) {
         Client.EVMTokenAmount[] memory tokenAmounts = new Client.EVMTokenAmount[](1);
         tokenAmounts[0] = Client.EVMTokenAmount({token: token, amount: amount});
         return _buildMessage(receiver, message, tokenAmounts);
@@ -177,6 +189,10 @@ contract WarehouseOutbox is Ownable {
             amount
         );
 
+        // Gate 4: does this fit in the token's budget for the current window?
+        // Applies to every shipper, including a compromised one.
+        _consumeLimit(token, amount);
+
         // The router pulls the cargo from this contract, exactly as it pulls
         // the fee. forceApprove clears any stale allowance first.
         IERC20(token).forceApprove(address(router), amount);
@@ -193,10 +209,14 @@ contract WarehouseOutbox is Ownable {
         address receiver,
         Client.EVM2AnyMessage memory evm2AnyMessage,
         string calldata message
-    ) internal returns (bytes32 messageId) {
+    ) internal whenNotPaused returns (bytes32 messageId) {
         if (!allowedDestination[destinationChainSelector][receiver]) {
             revert DestinationNotAllowed(destinationChainSelector, receiver);
         }
+
+        // Every shipment costs one from the delivery-count budget. This is what
+        // bounds a flood of individually-valid messages.
+        _consumeLimit(MESSAGE_COUNT_BUCKET, 1);
 
         evm2AnyMessage.feeToken = address(feeToken);
 
@@ -228,7 +248,7 @@ contract WarehouseOutbox is Ownable {
         address receiver,
         string memory message,
         Client.EVMTokenAmount[] memory tokenAmounts
-    ) internal pure returns (Client.EVM2AnyMessage memory) {
+    ) internal view returns (Client.EVM2AnyMessage memory) {
         return
             Client.EVM2AnyMessage({
                 receiver: abi.encode(receiver),
@@ -236,7 +256,7 @@ contract WarehouseOutbox is Ownable {
                 tokenAmounts: tokenAmounts,
                 extraArgs: Client._argsToBytes(
                     Client.GenericExtraArgsV2({
-                        gasLimit: DESTINATION_GAS_LIMIT,
+                        gasLimit: destinationGasLimit,
                         allowOutOfOrderExecution: true
                     })
                 ),
