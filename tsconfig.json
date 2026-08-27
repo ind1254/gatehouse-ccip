@@ -6,13 +6,17 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "hardhat.config.ts",
     "test/**/*.ts",
     "scripts/**/*.ts",
     "test-support/**/*.ts",
+    "src/**/*.ts",
+    "cli/**/*.ts",
     "artifacts/**/*.d.ts"
   ]
 }

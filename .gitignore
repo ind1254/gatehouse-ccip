@@ -5,3 +5,6 @@ coverage/
 dist/
 .env
 *.log
+
+# Local dev deployments are machine-specific. Testnet deployments get committed.
+deployments/local.json

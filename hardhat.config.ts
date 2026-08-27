@@ -12,4 +12,11 @@ export default defineConfig({
       },
     },
   },
+  networks: {
+    // A node started with `npm run node`. Testnets arrive in Checkpoint 7.
+    localhost: {
+      type: "http",
+      url: "http://127.0.0.1:8545",
+    },
+  },
 });

@@ -258,11 +258,90 @@ a comment saying why. Every gate added to the inbox has to be paid for in the
 source chain's gas budget, and that budget is set by the sender before the
 receiver ever runs.
 
-### Still missing on purpose
+### Still missing at this point
 
 One owner key still controls both desks' allowlists, limits, thresholds, and
 withdrawals. Splitting that into roles - and putting a timelock in front of the
 dangerous ones - is the remaining structural weakness.
+
+## Checkpoint 6: the operator console
+
+Every checkpoint so far added a defence. This one adds the thing that notices
+when a defence did not fire - because **the dangerous failures in this system are
+silent.** Cargo delivered to an address with no contract code is reported by CCIP
+as a success. Nothing reverts, nothing errors, no event appears on the
+destination. You cannot find it by watching for errors. You find it by comparing
+ledgers.
+
+```text
+outbox events ──┐
+                ├──► reconcile() ──► findings ──► exit code
+inbox events  ──┤
+on-chain state ─┘
+```
+
+### Running it
+
+```bash
+npm run node          # terminal 1: a local chain
+npm run deploy:local  # terminal 2: deploy and write deployments/local.json
+npm run gatehouse -- status
+npm run gatehouse -- reconcile
+npm run gatehouse -- trace <messageId>
+```
+
+`reconcile` exits **0 when healthy and 1 when something needs a human**, so it
+drops straight into cron or CI. `--json` gives machine-readable output.
+
+### What it checks
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `UNSETTLED_MESSAGE` | alarm with cargo, warn without | Shipped, never recorded as received |
+| `LEDGER_GAP` | alarm | `totalShipped` exceeds `totalReceived + totalHeld` |
+| `UNACCOUNTED_BALANCE` | warn | The desk holds more than its books explain |
+| `RELEASE_DUE` | warn | Held cargo matured and nobody released it |
+| `INBOX_PAUSED` / `OUTBOX_PAUSED` | info | Deliberate operator action, not a fault |
+
+A pause is reported but does **not** mark the system unhealthy. Alert fatigue is
+a real failure mode: if a planned action pages someone, the page stops meaning
+anything.
+
+### The drill
+
+[`scripts/drill-stranded-cargo.ts`](scripts/drill-stranded-cargo.ts) ships cargo
+to an address with no contract on it, against a real node:
+
+```text
+$ npx hardhat run scripts/drill-stranded-cargo.ts --network localhost
+transaction status: success          ← CCIP is perfectly happy
+
+$ npm run gatehouse -- reconcile
+ !! [UNSETTLED_MESSAGE] 0xd61b53... left the shipping desk but the receiving
+    desk never recorded it (carrying 1000000000000000000 of cargo).
+ !! [LEDGER_GAP] the shipping desk has sent 1000000000000000000 but the
+    receiving desk only accounts for 0.
+NEEDS ATTENTION                      ← exit code 1
+```
+
+A successful transaction, a spent fee, and a permanently lost token, caught by
+the only mechanism that can see it.
+
+### Why the CLI is read-only
+
+Every write this system needs - pause, unpause, release, allowlist changes - is a
+signed transaction, and signing needs a key-handling design that belongs with the
+testnet deployment rather than bolted onto a monitoring tool. As written, the
+console **cannot move anything**, so it is safe to run anywhere, by anyone,
+including unattended in CI. Write commands land in Checkpoint 7 alongside the
+keystore setup.
+
+### The ABIs are hand-written on purpose
+
+[`src/abis.ts`](src/abis.ts) declares only what the tooling reads, rather than
+importing from `artifacts/`. The tooling stays readable and needs no compile
+step to run - and [`test/Reconciliation.ts`](test/Reconciliation.ts) runs this
+exact code against freshly compiled contracts, so drift fails the suite.
 
 ## Planned checkpoints
 
@@ -271,7 +350,9 @@ dangerous ones - is the remaining structural weakness.
 3. ~~Authentication of the source chain and sender; replay protection.~~ Done.
 4. ~~Test-token transfer and balance accounting.~~ Done.
 5. ~~Pausing, rate limits, and large-transfer delays.~~ Done.
-6. Operator CLI, monitoring, reconciliation, and failure drills.
+6. ~~Operator CLI, monitoring, reconciliation, and failure drills.~~ Done.
+7. Testnet deployment (Ethereum Sepolia and Base Sepolia), CLI write commands, and key handling.
+8. Threat model, invariants, trust assumptions, ADRs, and a failure runbook.
 
 ## Reference
 

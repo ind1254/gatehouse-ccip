@@ -6,7 +6,10 @@
   "scripts": {
     "build": "hardhat build",
     "test": "hardhat test",
-    "typecheck": "hardhat build && tsc --noEmit"
+    "typecheck": "hardhat build && tsc --noEmit",
+    "node": "hardhat node",
+    "deploy:local": "hardhat run scripts/deploy-local.ts --network localhost",
+    "gatehouse": "tsx cli/gatehouse.ts"
   },
   "devDependencies": {
     "@chainlink/local": "^0.2.9",
@@ -14,6 +17,7 @@
     "@openzeppelin/contracts": "^5.4.0",
     "@types/node": "^22.15.0",
     "hardhat": "^3.14.0",
+    "tsx": "^4.20.6",
     "typescript": "^5.8.3",
     "viem": "^2.47.6"
   }
