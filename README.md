@@ -112,17 +112,72 @@ here and both in [test-support/warehouses.ts](test-support/warehouses.ts):
 2. **Encode the expected error** with viem and assert its bytes appear inside the
    wrapper.
 
+## Checkpoint 4: moving actual tokens
+
+`shipCargo` attaches an ERC-20 to the message. The token leaves the shipping
+desk's own balance, travels in `tokenAmounts`, and CCIP credits it to the
+receiving desk as part of executing the delivery.
+
+```text
+WarehouseOutbox ──┬─ text ──────────────┐
+                  └─ tokens ────────────┴──► CcipWarehouseInbox
+                     (Client.EVMTokenAmount[])
+```
+
+Both desks keep books: `totalShipped[token]` on the source side and
+`totalReceived[token]` on the destination side. Those two numbers agreeing is the
+invariant everything else is measured against, and Checkpoint 6 reconciles them.
+
+A fourth guardrail joins the shipping desk: cargo must use an **allowlisted
+token**, be non-zero, and be covered by the desk's own balance.
+
+### The two tests that matter
+
+**Tokens obey the gates.** In `moves no tokens when the inbox refuses the
+delivery`, a rogue desk ships a funded, well-formed cargo message. The inbox
+rejects the sender, the transaction reverts, and the token transfer is unwound
+along with it. Balances on both sides are untouched. Nothing partial survives,
+because a revert is all-or-nothing.
+
+**Some failures are silent.** In `silently strands cargo sent to an address with
+no contract code`, a delivery goes to an address with no contract on it. CCIP
+skips the receiver call entirely:
+
+```solidity
+// MockRouter, matching real CCIP behaviour
+if (... || receiver.code.length == 0 || !receiver.supportsInterface(...)) {
+    return (true, "", 0);   // reported as SUCCESS
+}
+```
+
+Nothing reverts. The tokens settle at the wrong address permanently, the inbox
+never hears about it, and the source desk books the shipment as complete. The
+only trace is `totalShipped` moving while `totalReceived` does not.
+
+That is the argument for the destination allowlist in a single test: **it turns a
+silent, permanent loss into a cheap revert on the source chain, before the fee is
+ever paid.**
+
+### An honest limit of the local simulator
+
+Chainlink's `CCIPLocalSimulator` moves cargo with a direct `transferFrom`, not
+through token pools. These tests therefore exercise **transfer semantics and
+accounting**, not burn/mint. Aggregate supply is asserted constant here because
+nothing is minted or burned at all, which is a weaker claim than a real
+burn/mint invariant. Proving that one needs token pools on live testnets, which
+is Checkpoint 7.
+
 ### Still missing on purpose
 
-No pausing, no rate limits, no token transfers, and a single owner key that can
-change every allowlist. Those are the next checkpoints.
+No pausing, no rate limits, and a single owner key that can change every
+allowlist and withdraw every token. Those are the next checkpoints.
 
 ## Planned checkpoints
 
 1. ~~Local destination inbox and state changes.~~ Done.
 2. ~~Source contract, router, and a locally simulated CCIP message.~~ Done.
 3. ~~Authentication of the source chain and sender; replay protection.~~ Done.
-4. Test-token transfer and balance accounting.
+4. ~~Test-token transfer and balance accounting.~~ Done.
 5. Pausing, rate limits, and large-transfer delays.
 6. Operator CLI, monitoring, reconciliation, and failure drills.
 

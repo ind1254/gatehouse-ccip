@@ -17,9 +17,20 @@ export const BASE_SEPOLIA_SELECTOR = 10344971235874465080n;
 
 export const erc20Abi = parseAbi([
   "function balanceOf(address account) view returns (uint256)",
+  "function totalSupply() view returns (uint256)",
 ]);
 
 export const mockRouterAbi = parseAbi(["function setFee(uint256 feeAmount)"]);
+
+/// CCIP-BnM is Chainlink's test token. `drip` mints exactly one whole token.
+export const testTokenAbi = parseAbi([
+  "function drip(address to)",
+  "function balanceOf(address account) view returns (uint256)",
+  "function totalSupply() view returns (uint256)",
+]);
+
+/// One whole CCIP-BnM token, in the token's smallest unit (18 decimals).
+export const ONE_TOKEN = parseEther("1");
 
 /**
  * Stand up the whole cross-chain setup on one local blockchain: a shipping
@@ -33,7 +44,7 @@ export async function deployWarehouses({ configure = true } = {}) {
   const { viem, networkHelpers } = await network.create();
 
   const ccip = await viem.deployContract("LocalCcipNetwork");
-  const [, sourceRouter, destinationRouter, , linkToken] =
+  const [, sourceRouter, destinationRouter, , linkToken, testToken] =
     await ccip.read.configuration();
 
   const outbox = await viem.deployContract("WarehouseOutbox", [
@@ -54,6 +65,7 @@ export async function deployWarehouses({ configure = true } = {}) {
       outbox.address,
       true,
     ]);
+    await outbox.write.setToken([testToken, true]);
   }
 
   return {
@@ -66,7 +78,60 @@ export async function deployWarehouses({ configure = true } = {}) {
     sourceRouter,
     destinationRouter,
     linkToken,
+    testToken,
   };
+}
+
+/**
+ * Mint whole CCIP-BnM tokens to an address, one `drip` at a time, and wait for
+ * the last one so balances are settled before the caller reads them.
+ */
+export async function dripTokens(
+  viem: Warehouses["viem"],
+  token: Address,
+  to: Address,
+  wholeTokens: number,
+) {
+  const [operator] = await viem.getWalletClients();
+  const publicClient = await viem.getPublicClient();
+
+  for (let i = 0; i < wholeTokens; i++) {
+    const hash = await operator.writeContract({
+      address: token,
+      abi: testTokenAbi,
+      functionName: "drip",
+      args: [to],
+    });
+    await publicClient.waitForTransactionReceipt({ hash });
+  }
+}
+
+/** Read an ERC-20 balance. */
+export async function balanceOf(
+  viem: Warehouses["viem"],
+  token: Address,
+  account: Address,
+) {
+  const publicClient = await viem.getPublicClient();
+  return publicClient.readContract({
+    address: token,
+    abi: erc20Abi,
+    functionName: "balanceOf",
+    args: [account],
+  });
+}
+
+/** Read an ERC-20 total supply. */
+export async function totalSupplyOf(
+  viem: Warehouses["viem"],
+  token: Address,
+) {
+  const publicClient = await viem.getPublicClient();
+  return publicClient.readContract({
+    address: token,
+    abi: erc20Abi,
+    functionName: "totalSupply",
+  });
 }
 
 type Warehouses = Awaited<ReturnType<typeof deployWarehouses>>;
