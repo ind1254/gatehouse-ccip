@@ -158,14 +158,35 @@ That is the argument for the destination allowlist in a single test: **it turns 
 silent, permanent loss into a cheap revert on the source chain, before the fee is
 ever paid.**
 
-### An honest limit of the local simulator
+### Two honest limits of the local simulator
 
-Chainlink's `CCIPLocalSimulator` moves cargo with a direct `transferFrom`, not
-through token pools. These tests therefore exercise **transfer semantics and
-accounting**, not burn/mint. Aggregate supply is asserted constant here because
-nothing is minted or burned at all, which is a weaker claim than a real
-burn/mint invariant. Proving that one needs token pools on live testnets, which
-is Checkpoint 7.
+**It is not burn/mint.** Chainlink's `CCIPLocalSimulator` moves cargo with a
+direct `transferFrom`, not through token pools. These tests therefore exercise
+**transfer semantics and accounting**, not burn/mint. Aggregate supply is
+asserted constant here because nothing is minted or burned at all, which is a
+weaker claim than a real burn/mint invariant. Proving that one needs token pools
+on live testnets, which is Checkpoint 7.
+
+**It collapses two chains into one transaction, and that hides the most
+important property of a real bridge.** In these tests, `ccipSend` and
+`_ccipReceive` run inside a single call stack, so a revert in the inbox unwinds
+the outbox too. Across real chains that is *not* what happens:
+
+```text
+local simulator          source tx ── inbox reverts ──► whole thing unwinds
+real CCIP                source tx ✅ committed
+                              ↓ (minutes later, separate transaction)
+                         destination tx ❌ reverts, message left FAILED
+```
+
+On live networks the source transaction commits and is **never** rolled back by a
+destination failure. The tokens have already left the source chain; the message
+sits in a failed state until someone manually executes it. So `moves no tokens
+when the inbox refuses the delivery` proves the destination transaction is
+atomic - which is true and worth having - but it must not be read as proof that
+the *bridge* is atomic. It is not. That gap between a committed source and a
+failed destination is exactly the in-flight state Checkpoints 5 and 6 have to
+handle.
 
 ### Still missing on purpose
 
