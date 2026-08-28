@@ -13,6 +13,73 @@ export interface FindingGuide {
 }
 
 export const FINDING_GUIDE: Record<string, FindingGuide> = {
+  MESSAGES_IN_FLIGHT: {
+    severity: "info",
+    meaning:
+      "Messages have been shipped and are still within the expected delivery " +
+      "window for this lane.",
+    causes: [
+      "Normal operation. Cross-chain delivery is dominated by source-chain " +
+        "finality and takes minutes, not seconds.",
+    ],
+    check: [
+      "Nothing. This is the state every healthy message passes through.",
+      "If the count keeps growing and never drains, the lane is stuck rather " +
+        "than slow.",
+    ],
+  },
+  MESSAGE_OVERDUE: {
+    severity: "warn",
+    meaning:
+      "A message has passed the expected delivery window for its lane and has " +
+      "still not been recorded by the receiving desk.",
+    causes: [
+      "The lane is congested or slower than the configured expectation.",
+      "The message failed on the destination and is awaiting manual execution.",
+      "The expected latency is configured too low for this lane.",
+    ],
+    check: [
+      "Look the messageId up on the CCIP explorer and read its state.",
+      "Check whether the inbox is paused or its rate-limit window is exhausted.",
+      "A FAILED message can be manually executed. Nothing is lost yet.",
+    ],
+  },
+  MESSAGE_MISSING: {
+    severity: "alarm",
+    meaning:
+      "A message is far past its expected delivery window. Treat it as lost " +
+      "until proven otherwise.",
+    causes: [
+      "It was delivered to an address with no contract code. CCIP reports that " +
+        "as a success and the cargo settles at the wrong address permanently.",
+      "It failed on the destination and nobody has executed it manually.",
+      "Too little destination gas was purchased for the receiver as it is now.",
+    ],
+    check: [
+      "Confirm the receiver address has contract code. If it does not, the " +
+        "cargo is not recoverable and the destination allowlist should be " +
+        "tightened so it cannot happen again.",
+      "Check the CCIP explorer. A FAILED message can still be executed.",
+      "Compare destinationGasLimit against what the receiver now costs to run.",
+    ],
+  },
+  UNACCOUNTED_MINT: {
+    severity: "alarm",
+    meaning:
+      "Tokens were minted directly to the receiving desk, outside any recorded " +
+      "delivery.",
+    causes: [
+      "An unbacked mint: tokens exist on the destination with no matching burn " +
+        "on the source. This is what a bridge exploit looks like from this side.",
+      "A token administrator minted deliberately, without telling the bridge.",
+    ],
+    check: [
+      "Pause immediately. This is the case the emergency stop exists for.",
+      "Compare aggregate supply across both chains.",
+      "Identify who holds mint authority on the destination token and whether " +
+        "that key is still trustworthy.",
+    ],
+  },
   UNSETTLED_MESSAGE: {
     severity: "alarm",
     meaning:

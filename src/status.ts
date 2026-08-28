@@ -1,6 +1,6 @@
 import type { Address, PublicClient } from "viem";
 import { inboxAbi, outboxAbi } from "./abis.js";
-import type { Deployment } from "./reconcile.js";
+import type { BridgeClients, Deployment } from "./reconcile.js";
 
 /// The zero address is the delivery-count bucket, not a token.
 export const MESSAGE_COUNT_BUCKET =
@@ -60,10 +60,12 @@ async function readLimits(
 
 /** A read-only snapshot of both desks: who controls them, and what is capped. */
 export async function readStatus(
-  client: PublicClient,
+  clients: BridgeClients,
   deployment: Deployment,
 ): Promise<GatehouseStatus> {
   const { outbox, inbox, tokens } = deployment;
+  const sourceTokens = tokens.map((pair) => pair.source);
+  const destinationTokens = tokens.map((pair) => pair.destination);
 
   const [
     outboxOwner,
@@ -79,22 +81,22 @@ export async function readStatus(
     releaseDelay,
     inboxLimits,
   ] = await Promise.all([
-    client.readContract({ address: outbox, abi: outboxAbi, functionName: "owner" }),
-    client.readContract({ address: outbox, abi: outboxAbi, functionName: "guardian" }),
-    client.readContract({ address: outbox, abi: outboxAbi, functionName: "paused" }),
-    client.readContract({ address: outbox, abi: outboxAbi, functionName: "shippedCount" }),
-    client.readContract({
+    clients.source.readContract({ address: outbox, abi: outboxAbi, functionName: "owner" }),
+    clients.source.readContract({ address: outbox, abi: outboxAbi, functionName: "guardian" }),
+    clients.source.readContract({ address: outbox, abi: outboxAbi, functionName: "paused" }),
+    clients.source.readContract({ address: outbox, abi: outboxAbi, functionName: "shippedCount" }),
+    clients.source.readContract({
       address: outbox,
       abi: outboxAbi,
       functionName: "destinationGasLimit",
     }),
-    readLimits(client, outbox, outboxAbi, tokens),
-    client.readContract({ address: inbox, abi: inboxAbi, functionName: "owner" }),
-    client.readContract({ address: inbox, abi: inboxAbi, functionName: "guardian" }),
-    client.readContract({ address: inbox, abi: inboxAbi, functionName: "paused" }),
-    client.readContract({ address: inbox, abi: inboxAbi, functionName: "deliveryCount" }),
-    client.readContract({ address: inbox, abi: inboxAbi, functionName: "releaseDelay" }),
-    readLimits(client, inbox, inboxAbi, tokens),
+    readLimits(clients.source, outbox, outboxAbi, sourceTokens),
+    clients.destination.readContract({ address: inbox, abi: inboxAbi, functionName: "owner" }),
+    clients.destination.readContract({ address: inbox, abi: inboxAbi, functionName: "guardian" }),
+    clients.destination.readContract({ address: inbox, abi: inboxAbi, functionName: "paused" }),
+    clients.destination.readContract({ address: inbox, abi: inboxAbi, functionName: "deliveryCount" }),
+    clients.destination.readContract({ address: inbox, abi: inboxAbi, functionName: "releaseDelay" }),
+    readLimits(clients.destination, inbox, inboxAbi, destinationTokens),
   ]);
 
   return {

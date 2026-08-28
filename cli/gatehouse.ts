@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createPublicClient, http, type Address, type Hex } from "viem";
-import { reconcile, type Deployment, type Finding } from "../src/reconcile.js";
+import { reconcile, type BridgeClients, type Deployment, type Finding } from "../src/reconcile.js";
 import { MESSAGE_COUNT_BUCKET, readStatus } from "../src/status.js";
 
 /**
@@ -19,12 +19,13 @@ const USAGE = `
 gatehouse - operator console for the Gatehouse CCIP bridge
 
 Usage:
-  gatehouse status      [--rpc <url>] [--deployment <file>]
+  gatehouse status      [--rpc <url>] [--dest-rpc <url>] [--deployment <file>]
   gatehouse reconcile   [--rpc <url>] [--deployment <file>] [--json]
   gatehouse trace <messageId>  [--rpc <url>] [--deployment <file>]
 
 Options:
-  --rpc         JSON-RPC endpoint       (default: http://127.0.0.1:8545)
+  --rpc         source-chain JSON-RPC      (default: http://127.0.0.1:8545)
+  --dest-rpc    destination-chain JSON-RPC (default: same as --rpc)
   --deployment  deployment JSON to read (default: deployments/local.json)
   --json        machine-readable output
 
@@ -38,6 +39,7 @@ interface Args {
   command: string;
   positional: string[];
   rpc: string;
+  destRpc: string;
   deployment: string;
   json: boolean;
 }
@@ -45,18 +47,27 @@ interface Args {
 function parseArgs(argv: string[]): Args {
   const positional: string[] = [];
   let rpc = process.env.GATEHOUSE_RPC ?? "http://127.0.0.1:8545";
+  let destRpc = process.env.GATEHOUSE_DEST_RPC ?? "";
   let deployment = process.env.GATEHOUSE_DEPLOYMENT ?? "deployments/local.json";
   let json = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--rpc") rpc = argv[++i] ?? rpc;
+    else if (arg === "--dest-rpc") destRpc = argv[++i] ?? destRpc;
     else if (arg === "--deployment") deployment = argv[++i] ?? deployment;
     else if (arg === "--json") json = true;
     else positional.push(arg);
   }
 
-  return { command: positional[0] ?? "", positional: positional.slice(1), rpc, deployment, json };
+  return {
+    command: positional[0] ?? "",
+    positional: positional.slice(1),
+    rpc,
+    destRpc: destRpc || rpc,
+    deployment,
+    json,
+  };
 }
 
 function loadDeployment(path: string): Deployment {
@@ -70,6 +81,8 @@ function loadDeployment(path: string): Deployment {
       outbox: parsed.outbox,
       inbox: parsed.inbox,
       tokens: parsed.tokens ?? [],
+      expectedLatencySeconds: parsed.expectedLatencySeconds,
+      fromBlock: parsed.fromBlock,
     };
   } catch (error) {
     console.error(`Could not read deployment file '${path}': ${String(error)}`);
@@ -109,10 +122,16 @@ async function main() {
   }
 
   const deployment = loadDeployment(args.deployment);
-  const client = createPublicClient({ transport: http(args.rpc) });
+  const clients: BridgeClients = {
+    source: createPublicClient({ transport: http(args.rpc) }),
+    destination: createPublicClient({ transport: http(args.destRpc) }),
+  };
 
   try {
-    await client.getChainId();
+    await Promise.all([
+      clients.source.getChainId(),
+      clients.destination.getChainId(),
+    ]);
   } catch {
     console.error(`Could not reach a node at ${args.rpc}.`);
     process.exit(2);
@@ -120,7 +139,7 @@ async function main() {
 
   switch (args.command) {
     case "status": {
-      const status = await readStatus(client, deployment);
+      const status = await readStatus(clients, deployment);
       if (args.json) {
         console.log(JSON.stringify(status, bigintReplacer, 2));
         break;
@@ -155,7 +174,7 @@ async function main() {
     }
 
     case "reconcile": {
-      const report = await reconcile(client, deployment);
+      const report = await reconcile(clients, deployment);
       if (args.json) {
         console.log(JSON.stringify(report, bigintReplacer, 2));
         process.exit(report.healthy ? 0 : 1);
@@ -164,18 +183,24 @@ async function main() {
       console.log(`Reconciliation at ${new Date(report.checkedAt * 1000).toISOString()}`);
       console.log(
         `  messages shipped   ${report.messages.length}` +
-          `  settled ${report.messages.length - report.unsettledMessages.length}` +
-          `  unsettled ${report.unsettledMessages.length}`,
+          `  settled ${report.messages.filter((m) => m.received).length}` +
+          `  in flight ${report.inFlightMessages.length}` +
+          `  late ${report.unsettledMessages.length}`,
       );
+      console.log(`  expected latency   ${report.expectedLatencySeconds}s`);
 
       for (const ledger of report.ledgers) {
-        console.log(`\n  token ${ledger.token}`);
+        console.log(`\n  token ${ledger.symbol ?? ledger.destinationToken}`);
         console.log(`    shipped        ${ledger.shipped}`);
         console.log(`    received       ${ledger.received}`);
         console.log(`    held           ${ledger.held}`);
         console.log(`    inbox balance  ${ledger.inboxBalance}`);
-        console.log(`    unsettled      ${ledger.unsettled}`);
+        console.log(`    in flight      ${ledger.inFlight}`);
+        console.log(`    missing        ${ledger.missing}`);
         console.log(`    unaccounted    ${ledger.unaccounted}`);
+        if (ledger.unaccountedFromMint > 0n) {
+          console.log(`    of which MINTED ${ledger.unaccountedFromMint}`);
+        }
       }
 
       if (report.findings.length === 0) {
@@ -198,7 +223,7 @@ async function main() {
         process.exit(2);
       }
 
-      const report = await reconcile(client, deployment);
+      const report = await reconcile(clients, deployment);
       const message = report.messages.find(
         (candidate) => candidate.messageId.toLowerCase() === messageId.toLowerCase(),
       );

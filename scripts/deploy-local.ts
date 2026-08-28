@@ -57,7 +57,10 @@ const deployment = {
   ccip: ccip.address,
   router: sourceRouter,
   linkToken,
-  tokens: [testToken],
+  tokens: [{ symbol: "CCIP-BnM", source: testToken, destination: testToken }],
+  // One local chain, so delivery is instant. A testnet lane sets this from
+  // the source chain finality time.
+  expectedLatencySeconds: 5,
   guardian: guardian.account.address,
 };
 

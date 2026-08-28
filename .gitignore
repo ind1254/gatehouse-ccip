@@ -8,3 +8,5 @@ dist/
 
 # Local dev deployments are machine-specific. Testnet deployments get committed.
 deployments/local.json
+
+deployments/testnet.json

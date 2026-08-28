@@ -4,8 +4,9 @@
 
 A security-first CCIP learning project, built one verified checkpoint at a time.
 
-Everything runs on Hardhat's temporary local blockchain. No wallet, testnet
-funds, or private key is needed yet.
+The test suite runs entirely on Hardhat's local chain: no wallet, testnet funds,
+or private key needed. Deploying to Ethereum Sepolia and Base Sepolia is
+documented in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ```bash
 npm install
@@ -442,6 +443,75 @@ gatehouse_reconcile:
 
 The theft is reported, and the instruction attached to it is inert.
 
+## Checkpoint 7: two real chains
+
+Both desks now target Ethereum Sepolia and Base Sepolia. Full procedure in
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+Router, LINK, and chain-selector constants live in
+[`src/networks.ts`](src/networks.ts) with the CCIP directory page they were
+copied from recorded next to them. Secrets go in Hardhat's **encrypted
+keystore** — there is no `.env` in this repository on purpose:
+
+```bash
+npx hardhat keystore set SEPOLIA_RPC_URL
+npx hardhat keystore set BASE_SEPOLIA_RPC_URL
+npx hardhat keystore set DEPLOYER_PRIVATE_KEY
+```
+
+Deployment is four commands, not one, and the shape is the point: **each chain
+holds its own allowlist and neither can write to the other's storage.**
+Configuration runs on both networks, with limits and thresholds set *before* the
+allowlist entries that make shipping possible, so neither desk is ever briefly
+live with no caps on it.
+
+### Two defects this checkpoint fixed
+
+Both were found by asking what the code would do on a real network rather than
+in the simulator, and both had passing tests before the fix.
+
+**A message that has not arrived is not a message that is lost.** Delivery takes
+minutes, dominated by source-chain finality. Every healthy message spends that
+time "shipped but not received" — so the old code alarmed on the normal state of
+every message that has ever worked. The findings logic read `cargoAmount` and
+never looked at `shippedAtBlock`, which the report was already carrying.
+
+Severity is now a ramp against a per-lane expected latency, because a binary
+threshold just moves the false-positive cliff:
+
+```text
+< expected latency            info    MESSAGES_IN_FLIGHT
+> expected latency            warn    MESSAGE_OVERDUE
+> 3x expected latency         alarm   MESSAGE_MISSING
+```
+
+`LEDGER_GAP` now subtracts cargo explained by in-flight messages, so it fires on
+a real gap rather than on latency. And "now" is whichever clock is further
+ahead, the source chain's latest block or the wall clock: a chain that has
+stopped producing blocks would otherwise report every pending message as freshly
+sent, hiding exactly the outage worth alerting on.
+
+**A donation and a counterfeit look identical from the ledgers alone.** Both
+show up as "the desk holds more than its books explain". The reconciler now
+reads the token's own `Transfer` logs into the inbox, and an ERC-20 mint is a
+transfer from the zero address:
+
+| Source of the surplus | Finding | Severity |
+|---|---|---|
+| A plain transfer from someone's wallet | `UNACCOUNTED_BALANCE` | warn |
+| **Minted straight to the desk** | `UNACCOUNTED_MINT` | **alarm** |
+
+Tokens coming into existence on the destination with no matching burn on the
+source is what an unbacked mint looks like from this side — the counterfeiting
+scenario, now with a detector.
+
+### Also in this checkpoint
+
+`reconcile()` and `readStatus()` take **two clients**, source and destination,
+because on a real deployment the desks are on different chains. Locally the same
+client is passed twice. Scanning starts at each contract's deployment block, so
+the reconciler never asks a provider for the entire history of a chain.
+
 ## Planned checkpoints
 
 1. ~~Local destination inbox and state changes.~~ Done.
@@ -451,7 +521,7 @@ The theft is reported, and the instruction attached to it is inert.
 5. ~~Pausing, rate limits, and large-transfer delays.~~ Done.
 6. ~~Operator CLI, monitoring, reconciliation, and failure drills.~~ Done.
 6b. ~~MCP server over the operator console, with the untrusted-input boundary.~~ Done.
-7. Testnet deployment (Ethereum Sepolia and Base Sepolia), CLI write commands, and key handling.
+7. ~~Testnet deployment scaffolding, key handling, and per-lane latency.~~ Done (awaiting a funded deploy).
 8. Threat model, invariants, trust assumptions, ADRs, and a failure runbook.
 
 ## Reference

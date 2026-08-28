@@ -23,7 +23,7 @@ const [operator, , , attackerDrop] = await viem.getWalletClients();
 const publicClient = await viem.getPublicClient();
 
 const outbox = await viem.getContractAt("WarehouseOutbox", deployment.outbox);
-const testToken = deployment.tokens[0];
+const testToken = deployment.tokens[0].source;
 
 for (let i = 0; i < 2; i++) {
   const hash = await operator.writeContract({

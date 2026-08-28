@@ -8,7 +8,7 @@ import {
   ONE_TOKEN,
   SEPOLIA_SELECTOR,
 } from "../test-support/warehouses.js";
-import { reconcile, type Deployment } from "../src/reconcile.js";
+import { reconcile, type BridgeClients, type Deployment } from "../src/reconcile.js";
 import { readStatus } from "../src/status.js";
 
 const ONE_HOUR = 3600;
@@ -24,18 +24,27 @@ const transferAbi = parseAbi([
  */
 async function setUp(options: { configure?: boolean } = {}) {
   const context = await deployWarehouses(options);
-  const client = (await context.viem.getPublicClient()) as unknown as PublicClient;
+  const publicClient = (await context.viem.getPublicClient()) as unknown as PublicClient;
+  // One local chain plays both sides.
+  const clients: BridgeClients = { source: publicClient, destination: publicClient };
   const deployment: Deployment = {
     outbox: context.outbox.address as Address,
     inbox: context.inbox.address as Address,
-    tokens: [context.testToken as Address],
+    tokens: [
+      {
+        symbol: "CCIP-BnM",
+        source: context.testToken as Address,
+        destination: context.testToken as Address,
+      },
+    ],
+    expectedLatencySeconds: 0,
   };
-  return { ...context, client, deployment };
+  return { ...context, clients, deployment };
 }
 
 describe("Reconciliation: the happy path", function () {
   it("reports healthy when both desks agree", async function () {
-    const { viem, client, deployment, outbox, inbox, testToken } = await setUp();
+    const { viem, clients, deployment, outbox, inbox, testToken } = await setUp();
     await dripTokens(viem, testToken, outbox.address, 2);
 
     await outbox.write.shipCargo([
@@ -46,7 +55,7 @@ describe("Reconciliation: the happy path", function () {
       "Pallet 42, one crate",
     ]);
 
-    const report = await reconcile(client, deployment);
+    const report = await reconcile(clients, deployment);
 
     assert.equal(report.healthy, true);
     assert.equal(report.findings.length, 0);
@@ -63,7 +72,7 @@ describe("Reconciliation: the happy path", function () {
 
 describe("Drill 1: cargo shipped to an address that cannot receive it", function () {
   it("catches the failure CCIP reported as a success", async function () {
-    const { viem, client, deployment, outbox, inbox, testToken } = await setUp();
+    const { viem, clients, deployment, outbox, inbox, testToken } = await setUp();
     const [, typo] = await viem.getWalletClients();
     await dripTokens(viem, testToken, outbox.address, 2);
 
@@ -82,21 +91,21 @@ describe("Drill 1: cargo shipped to an address that cannot receive it", function
       "Pallet 42, one crate",
     ]);
 
-    const report = await reconcile(client, deployment);
+    const report = await reconcile(clients, deployment);
 
     assert.equal(report.healthy, false);
     assert.equal(report.unsettledMessages.length, 1);
     assert.equal(await inbox.read.deliveryCount(), 0n);
 
     const codes = report.findings.map((finding) => finding.code);
-    assert.ok(codes.includes("UNSETTLED_MESSAGE"));
+    assert.ok(codes.includes("MESSAGE_MISSING"));
     assert.ok(codes.includes("LEDGER_GAP"));
 
     // Cargo went missing, so this is an alarm and not merely a warning.
-    const unsettled = report.findings.find(
-      (finding) => finding.code === "UNSETTLED_MESSAGE",
+    const missing = report.findings.find(
+      (finding) => finding.code === "MESSAGE_MISSING",
     );
-    assert.equal(unsettled?.severity, "alarm");
+    assert.equal(missing?.severity, "alarm");
 
     const [ledger] = report.ledgers;
     assert.equal(ledger.shipped, ONE_TOKEN);
@@ -111,7 +120,7 @@ describe("Drill 1: cargo shipped to an address that cannot receive it", function
 
 describe("Drill 2: tokens arriving without a message", function () {
   it("reports a balance the books cannot explain", async function () {
-    const { viem, client, deployment, inbox, testToken } = await setUp();
+    const { viem, clients, deployment, inbox, testToken } = await setUp();
     const [donor] = await viem.getWalletClients();
     await dripTokens(viem, testToken, donor.account.address, 1);
 
@@ -126,7 +135,7 @@ describe("Drill 2: tokens arriving without a message", function () {
     });
     await publicClient.waitForTransactionReceipt({ hash });
 
-    const report = await reconcile(client, deployment);
+    const report = await reconcile(clients, deployment);
 
     assert.equal(report.healthy, false);
     const finding = report.findings.find(
@@ -143,7 +152,7 @@ describe("Drill 2: tokens arriving without a message", function () {
 
 describe("Drill 3: held cargo nobody released", function () {
   it("flags a hold that has matured and is still sitting there", async function () {
-    const { viem, client, deployment, outbox, inbox, networkHelpers, testToken } =
+    const { viem, clients, deployment, outbox, inbox, networkHelpers, testToken } =
       await setUp();
     await dripTokens(viem, testToken, outbox.address, 5);
     await inbox.write.setLargeTransferThreshold([testToken, ONE_TOKEN * 2n]);
@@ -158,7 +167,7 @@ describe("Drill 3: held cargo nobody released", function () {
     ]);
 
     // While the hold is running, nothing is wrong.
-    let report = await reconcile(client, deployment);
+    let report = await reconcile(clients, deployment);
     assert.equal(report.healthy, true);
     assert.equal(report.held.length, 1);
     assert.equal(report.held[0].due, false);
@@ -166,7 +175,7 @@ describe("Drill 3: held cargo nobody released", function () {
     await networkHelpers.time.increase(ONE_HOUR + 1);
 
     // Once it matures and stays unreleased, an operator has work to do.
-    report = await reconcile(client, deployment);
+    report = await reconcile(clients, deployment);
     assert.equal(report.healthy, false);
     assert.equal(report.held[0].due, true);
     assert.ok(
@@ -175,7 +184,7 @@ describe("Drill 3: held cargo nobody released", function () {
 
     await inbox.write.releaseCargo([report.held[0].messageId]);
 
-    report = await reconcile(client, deployment);
+    report = await reconcile(clients, deployment);
     assert.equal(report.healthy, true);
     assert.equal(report.held[0].released, true);
   });
@@ -183,10 +192,10 @@ describe("Drill 3: held cargo nobody released", function () {
 
 describe("Drill 4: an incident in progress", function () {
   it("reports a paused desk without calling it a failure", async function () {
-    const { client, deployment, inbox } = await setUp();
+    const { clients, deployment, inbox } = await setUp();
 
     await inbox.write.pause();
-    const report = await reconcile(client, deployment);
+    const report = await reconcile(clients, deployment);
 
     assert.equal(report.inboxPaused, true);
     const finding = report.findings.find(
@@ -203,14 +212,14 @@ describe("Drill 4: an incident in progress", function () {
 
 describe("Operator status", function () {
   it("reads both desks through the same ABIs the CLI uses", async function () {
-    const { viem, client, deployment, outbox, inbox, testToken } = await setUp();
+    const { viem, clients, deployment, outbox, inbox, testToken } = await setUp();
     const [, guardian] = await viem.getWalletClients();
 
     await outbox.write.setGuardian([guardian.account.address]);
     await outbox.write.setLimit([zeroAddress, true, 5n, BigInt(ONE_HOUR)]);
     await inbox.write.setReleaseDelay([BigInt(ONE_HOUR)]);
 
-    const status = await readStatus(client, deployment);
+    const status = await readStatus(clients, deployment);
 
     assert.equal(
       status.outbox.guardian.toLowerCase(),

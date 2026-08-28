@@ -4,8 +4,8 @@ import { resolve } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { createPublicClient, http, type Address, type PublicClient } from "viem";
-import { reconcile, type Deployment, type Finding } from "../src/reconcile.js";
+import { createPublicClient, http, type Address } from "viem";
+import { reconcile, type BridgeClients, type Deployment } from "../src/reconcile.js";
 import { readStatus } from "../src/status.js";
 import { fenceUntrusted, UNTRUSTED_DATA_NOTICE } from "../src/untrusted.js";
 import { FINDING_GUIDE } from "../src/findings-guide.js";
@@ -29,6 +29,7 @@ import { FINDING_GUIDE } from "../src/findings-guide.js";
  */
 
 const RPC_URL = process.env.GATEHOUSE_RPC ?? "http://127.0.0.1:8545";
+const DEST_RPC_URL = process.env.GATEHOUSE_DEST_RPC ?? RPC_URL;
 const DEPLOYMENT_PATH =
   process.env.GATEHOUSE_DEPLOYMENT ?? "deployments/local.json";
 
@@ -47,11 +48,16 @@ function loadDeployment(): Deployment {
     outbox: parsed.outbox,
     inbox: parsed.inbox,
     tokens: parsed.tokens ?? [],
+    expectedLatencySeconds: parsed.expectedLatencySeconds,
+    fromBlock: parsed.fromBlock,
   };
 }
 
-function client(): PublicClient {
-  return createPublicClient({ transport: http(RPC_URL) });
+function clients(): BridgeClients {
+  return {
+    source: createPublicClient({ transport: http(RPC_URL) }),
+    destination: createPublicClient({ transport: http(DEST_RPC_URL) }),
+  };
 }
 
 function json(value: unknown) {
@@ -99,7 +105,7 @@ server.registerTool(
   },
   async () => {
     try {
-      return json(await readStatus(client(), loadDeployment()));
+      return json(await readStatus(clients(), loadDeployment()));
     } catch (error) {
       return failure(error);
     }
@@ -129,7 +135,7 @@ server.registerTool(
   },
   async ({ severity }) => {
     try {
-      const report = await reconcile(client(), loadDeployment());
+      const report = await reconcile(clients(), loadDeployment());
 
       const findings =
         severity === "all"
@@ -181,7 +187,7 @@ server.registerTool(
   },
   async ({ messageId }) => {
     try {
-      const report = await reconcile(client(), loadDeployment());
+      const report = await reconcile(clients(), loadDeployment());
       const wanted = messageId.toLowerCase();
 
       const message = report.messages.find(
