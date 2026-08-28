@@ -1,5 +1,7 @@
 # Gatehouse
 
+[![CI](https://github.com/ind1254/gatehouse-ccip/actions/workflows/ci.yml/badge.svg)](https://github.com/ind1254/gatehouse-ccip/actions/workflows/ci.yml)
+
 A security-first CCIP learning project, built one verified checkpoint at a time.
 
 Everything runs on Hardhat's temporary local blockchain. No wallet, testnet
