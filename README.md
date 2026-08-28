@@ -14,6 +14,28 @@ npm test
 npm run typecheck
 ```
 
+## Start here
+
+If you are reviewing this rather than running it, these are the documents worth
+your time:
+
+| Document | What it covers |
+|---|---|
+| [Threat model](docs/threat-model.md) | Ten attack scenarios, what stops each, and the **residual risk ranked** |
+| [Invariants](docs/invariants.md) | Twelve properties, each mapped to the test that asserts it |
+| [Trust assumptions](docs/trust-assumptions.md) | What this takes on faith, and what breaks if each is wrong |
+| [Failure runbook](docs/failure-runbook.md) | What an operator does at 3am, per finding |
+| [ADRs](docs/adr) | Six decisions, with the reasoning and the trade accepted |
+| [Deployment](docs/DEPLOYMENT.md) | Testnet procedure and key handling |
+
+The invariants document cites tests by name, and
+[`test/DocsMatchTests.ts`](test/DocsMatchTests.ts) fails the suite if any cited
+test stops existing — so the documentation cannot rot quietly while still
+claiming to be enforced.
+
+The threat model's largest residual risk is stated plainly rather than buried:
+**a single owner key can withdraw everything, and that is not mitigated today.**
+
 ## Checkpoint 1: a local warehouse inbox
 
 [`WarehouseInbox.sol`](contracts/WarehouseInbox.sol) models only the destination
@@ -522,7 +544,7 @@ the reconciler never asks a provider for the entire history of a chain.
 6. ~~Operator CLI, monitoring, reconciliation, and failure drills.~~ Done.
 6b. ~~MCP server over the operator console, with the untrusted-input boundary.~~ Done.
 7. ~~Testnet deployment scaffolding, key handling, and per-lane latency.~~ Done (awaiting a funded deploy).
-8. Threat model, invariants, trust assumptions, ADRs, and a failure runbook.
+8. ~~Threat model, invariants, trust assumptions, ADRs, and a failure runbook.~~ Done.
 
 ## Reference
 
