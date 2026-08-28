@@ -1,4 +1,12 @@
-import { parseAbi, zeroAddress, type Address, type Hex, type PublicClient } from "viem";
+import {
+  parseAbi,
+  zeroAddress,
+  type Abi,
+  type Address,
+  type Hex,
+  type PublicClient,
+} from "viem";
+import { syncContractLogs, type IndexerConfig } from "./indexer.js";
 import { inboxAbi, outboxAbi } from "./abis.js";
 
 /**
@@ -128,15 +136,111 @@ export interface BridgeClients {
 /** Past this multiple of expected latency, a message is presumed lost. */
 export const MISSING_MULTIPLIER = 3;
 
+/** The shape both the direct and indexed readers produce. */
+interface EventRow {
+  args: Record<string, unknown>;
+  blockNumber: bigint;
+  transactionHash: string;
+}
+
+interface EventReadResult {
+  logs: Record<string, EventRow[]>;
+  /**
+   * The height these events are complete to.
+   *
+   * The index holds back a confirmations buffer, so its events stop short of
+   * the chain head. Contract state must then be read at the SAME height, or the
+   * report mixes two views: `totalShipped` would include a shipment whose
+   * `DeliveryShipped` event is still behind the buffer, and the difference
+   * would be reported as missing cargo. That is a false alarm on every
+   * shipment for the length of the buffer.
+   */
+  atBlock?: bigint;
+}
+
+/**
+ * Read a contract's events either straight from the node or through the durable
+ * index, depending on whether one is configured.
+ *
+ * Both paths return the same rows, so nothing downstream knows or cares which
+ * was used - which is what makes it safe to run the indexed path in production
+ * and the direct path in tests.
+ */
+function makeEventReader(
+  client: PublicClient,
+  address: Address,
+  abi: Abi,
+  eventNames: string[],
+  fromBlock: bigint,
+  index: IndexerConfig | undefined,
+): () => Promise<EventReadResult> {
+  if (index) {
+    return async () => {
+      const { logs, state } = await syncContractLogs(
+        client,
+        { address, abi, eventNames, fromBlock },
+        index,
+      );
+      // Never pin below the contract own deployment block. Immediately after
+      // deploying, every block is still inside the confirmations buffer and the
+      // checkpoint sits before the contract existed; reading state there would
+      // fail outright. At the deployment block, state and events agree at zero.
+      const atBlock =
+        state.lastProcessedBlock < fromBlock ? fromBlock : state.lastProcessedBlock;
+      return { logs, atBlock };
+    };
+  }
+
+  return async () => {
+    const grouped: Record<string, EventRow[]> = {};
+
+    await Promise.all(
+      eventNames.map(async (eventName) => {
+        const logs = await client.getContractEvents({
+          address,
+          abi,
+          eventName,
+          fromBlock,
+        });
+        grouped[eventName] = logs.map((log) => ({
+          args: (log.args ?? {}) as Record<string, unknown>,
+          blockNumber: log.blockNumber ?? 0n,
+          transactionHash: log.transactionHash ?? "0x",
+        }));
+      }),
+    );
+
+    return { logs: grouped };
+  };
+}
+
 const DEFAULT_EXPECTED_LATENCY_SECONDS = 60;
 
 const erc20TransferAbi = parseAbi([
   "event Transfer(address indexed from, address indexed to, uint256 value)",
 ]);
 
+/**
+ * Where reconciliation gets its logs.
+ *
+ * Without `index`, every run reads from the deployment block - fine locally,
+ * and the wrong shape on a real network. With it, reads resume from a persisted
+ * checkpoint in bounded chunks. The report is identical either way; only the
+ * cost of producing it changes.
+ */
+export interface ReconcileOptions {
+  index?: {
+    sourceStatePath: string;
+    destinationStatePath: string;
+    chunkSize?: bigint;
+    confirmations?: bigint;
+  };
+}
+
 export async function reconcile(
   clients: BridgeClients,
   deployment: Deployment,
+  options: ReconcileOptions = {},
 ): Promise<ReconciliationReport> {
   const { outbox, inbox, tokens } = deployment;
   const expectedLatencySeconds =
@@ -144,52 +248,70 @@ export async function reconcile(
   const sourceFrom = deployment.fromBlock?.source ?? 0n;
   const destinationFrom = deployment.fromBlock?.destination ?? 0n;
 
-  const [
-    shippedLogs,
-    cargoShippedLogs,
-    receivedLogs,
-    heldLogs,
-    releasedLogs,
-    outboxPaused,
-    inboxPaused,
-    sourceBlock,
-    destinationBlock,
-  ] = await Promise.all([
-    clients.source.getContractEvents({
-      address: outbox,
-      abi: outboxAbi,
-      eventName: "DeliveryShipped",
-      fromBlock: sourceFrom,
-    }),
-    clients.source.getContractEvents({
-      address: outbox,
-      abi: outboxAbi,
-      eventName: "CargoShipped",
-      fromBlock: sourceFrom,
-    }),
-    clients.destination.getContractEvents({
-      address: inbox,
-      abi: inboxAbi,
-      eventName: "DeliveryReceived",
-      fromBlock: destinationFrom,
-    }),
-    clients.destination.getContractEvents({
-      address: inbox,
-      abi: inboxAbi,
-      eventName: "CargoHeld",
-      fromBlock: destinationFrom,
-    }),
-    clients.destination.getContractEvents({
-      address: inbox,
-      abi: inboxAbi,
-      eventName: "CargoReleased",
-      fromBlock: destinationFrom,
-    }),
-    clients.source.readContract({ address: outbox, abi: outboxAbi, functionName: "paused" }),
-    clients.destination.readContract({ address: inbox, abi: inboxAbi, functionName: "paused" }),
-    clients.source.getBlock(),
-    clients.destination.getBlock(),
+  const readSourceEvents = makeEventReader(
+    clients.source,
+    outbox,
+    outboxAbi as unknown as Abi,
+    ["DeliveryShipped", "CargoShipped"],
+    sourceFrom,
+    options.index && {
+      statePath: options.index.sourceStatePath,
+      chunkSize: options.index.chunkSize,
+      confirmations: options.index.confirmations,
+    },
+  );
+
+  const readDestinationEvents = makeEventReader(
+    clients.destination,
+    inbox,
+    inboxAbi as unknown as Abi,
+    ["DeliveryReceived", "CargoHeld", "CargoReleased"],
+    destinationFrom,
+    options.index && {
+      statePath: options.index.destinationStatePath,
+      chunkSize: options.index.chunkSize,
+      confirmations: options.index.confirmations,
+    },
+  );
+
+  // Events first, because their committed height decides where state is read.
+  const [sourceEvents, destinationEvents] = await Promise.all([
+    readSourceEvents(),
+    readDestinationEvents(),
   ]);
+
+  // Pin every contract read to the height the events are complete to, so the
+  // report describes one consistent view of each chain. Without this, a
+  // shipment inside the confirmations buffer appears in `totalShipped` while
+  // its event does not, and the difference is reported as missing cargo - a
+  // false alarm on every shipment, which is exactly how an alert channel stops
+  // being believed.
+  const sourceAt = sourceEvents.atBlock;
+  const destinationAt = destinationEvents.atBlock;
+
+  const [outboxPaused, inboxPaused, sourceBlock, destinationBlock] =
+    await Promise.all([
+      clients.source.readContract({
+        address: outbox,
+        abi: outboxAbi,
+        functionName: "paused",
+        ...(sourceAt !== undefined ? { blockNumber: sourceAt } : {}),
+      }),
+      clients.destination.readContract({
+        address: inbox,
+        abi: inboxAbi,
+        functionName: "paused",
+        ...(destinationAt !== undefined ? { blockNumber: destinationAt } : {}),
+      }),
+      clients.source.getBlock(),
+      clients.destination.getBlock(),
+    ]);
+
+  const shippedLogs = sourceEvents.logs.DeliveryShipped ?? [];
+  const cargoShippedLogs = sourceEvents.logs.CargoShipped ?? [];
+  const receivedLogs = destinationEvents.logs.DeliveryReceived ?? [];
+  const heldLogs = destinationEvents.logs.CargoHeld ?? [];
+  const releasedLogs = destinationEvents.logs.CargoReleased ?? [];
 
   const receivedIds = new Set(receivedLogs.map((log) => log.args.messageId as Hex));
   const receivedTxHashes = new Set(
@@ -261,24 +383,28 @@ export async function reconcile(
         abi: outboxAbi,
         functionName: "totalShipped",
         args: [pair.source],
+        ...(sourceAt !== undefined ? { blockNumber: sourceAt } : {}),
       }),
       clients.destination.readContract({
         address: inbox,
         abi: inboxAbi,
         functionName: "totalReceived",
         args: [pair.destination],
+        ...(destinationAt !== undefined ? { blockNumber: destinationAt } : {}),
       }),
       clients.destination.readContract({
         address: inbox,
         abi: inboxAbi,
         functionName: "totalHeld",
         args: [pair.destination],
+        ...(destinationAt !== undefined ? { blockNumber: destinationAt } : {}),
       }),
       clients.destination.readContract({
         address: inbox,
         abi: inboxAbi,
         functionName: "cargoBalance",
         args: [pair.destination],
+        ...(destinationAt !== undefined ? { blockNumber: destinationAt } : {}),
       }),
     ]);
 
@@ -300,6 +426,7 @@ export async function reconcile(
             pair.destination,
             inbox,
             destinationFrom,
+            destinationAt,
             receivedTxHashes,
           )
         : 0n;
@@ -401,6 +528,7 @@ async function sumMintsInto(
   token: Address,
   recipient: Address,
   fromBlock: bigint,
+  toBlock: bigint | undefined,
   accountedTxHashes: Set<string>,
 ): Promise<bigint> {
   const logs = await client.getContractEvents({
@@ -409,6 +537,7 @@ async function sumMintsInto(
     eventName: "Transfer",
     args: { from: zeroAddress, to: recipient },
     fromBlock,
+    ...(toBlock !== undefined ? { toBlock } : {}),
   });
 
   let total = 0n;

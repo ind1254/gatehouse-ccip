@@ -222,6 +222,42 @@ failure: if planned actions page someone, pages stop meaning anything.
 
 ---
 
+## I13. Deploying and configuring twice does the work once
+
+Both are safe to re-run, because in practice they will be. The chain is the
+record of what exists; the deployment file is a cache of it.
+
+- ✅ `adopts a contract that is already recorded and really there`
+- ✅ `redeploys when the recorded address has no code`
+- ✅ `recovers a deployment whose transaction landed but was never recorded`
+- ✅ `deploys when a pending intent never actually landed`
+- ✅ `refuses to adopt something that is not our contract`
+- ✅ `applies only what differs, then nothing at all`
+- ✅ `resumes after a step fails part way through`
+- ✅ `treats an unreadable step as needing a change rather than skipping it`
+
+The recovery case works because a CREATE address is knowable *before* the
+transaction is sent, so intent can be written down first. See
+[adr/0009-chain-is-the-record-of-what-exists.md](adr/0009-chain-is-the-record-of-what-exists.md).
+
+## I14. Reading the chain resumes; it does not start over
+
+With an index configured, reconciliation reads in bounded chunks from a
+persisted checkpoint, and never commits blocks that could still be reorganised.
+
+- ✅ `does no work at all on a second run with no new blocks`
+- ✅ `picks up only what is new`
+- ✅ `splits the range into bounded chunks`
+- ✅ `resumes from a partially written index without duplicating`
+- ✅ `starts over rather than resuming against a different contract`
+- ✅ `writes state atomically, so a torn file is never observed`
+- ✅ `does not commit logs from blocks that could still be reorganised`
+- ✅ `produces the same report either way`
+
+That last test is what makes the whole thing safe: the indexed and direct
+readers return identical rows, so nothing downstream can tell which was used.
+See [adr/0010-durable-log-index.md](adr/0010-durable-log-index.md).
+
 ## Not yet invariants
 
 Stated plainly, because a reviewer will look for them:
@@ -232,4 +268,5 @@ Stated plainly, because a reviewer will look for them:
 | Source and destination transactions are atomic | **False by design** on real CCIP |
 | A single key cannot cause total loss | **False today** — one owner controls both desks |
 | Fuzz and formal invariant testing | Not written; all tests are example-based |
-| Reconciler resumes from a checkpoint rather than rescanning | Not implemented; scanning starts at the deployment block |
+| Reorg detection and rollback | **Not implemented.** A confirmations buffer only makes a deep reorg unlikely |
+| Cross-checking a second RPC provider | Not implemented; one endpoint is believed on its word |

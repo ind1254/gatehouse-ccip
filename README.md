@@ -22,10 +22,10 @@ your time:
 | Document | What it covers |
 |---|---|
 | [Threat model](docs/threat-model.md) | Ten attack scenarios, what stops each, and the **residual risk ranked** |
-| [Invariants](docs/invariants.md) | Thirteen properties, each mapped to the test that asserts it |
+| [Invariants](docs/invariants.md) | Fifteen properties, each mapped to the test that asserts it |
 | [Trust assumptions](docs/trust-assumptions.md) | What this takes on faith, and what breaks if each is wrong |
 | [Failure runbook](docs/failure-runbook.md) | What an operator does at 3am, per finding |
-| [ADRs](docs/adr) | Eight decisions, with the reasoning and the trade accepted |
+| [ADRs](docs/adr) | Ten decisions, with the reasoning and the trade accepted |
 | [Deployment](docs/DEPLOYMENT.md) | Testnet procedure and key handling |
 
 The invariants document cites tests by name, and
@@ -595,6 +595,73 @@ T5 in the threat model from instant total loss to an observable, cancellable
 event — but only if somebody is watching, which
 [trust-assumptions.md](docs/trust-assumptions.md) now says in as many words.
 
+## Checkpoint 10: running it twice, and reading the chain the way you would have to
+
+Two more items from the same review. Both are about the difference between code
+that works once, by hand, and code that runs unattended.
+
+### Deploying and configuring are now idempotent
+
+The old deploy script read the state file, then deployed unconditionally. The
+quiet failure: the transaction lands, the process dies before recording the
+address, and the next run deploys a **second** contract. Two desks exist, one is
+configured, and reconciliation compares the wrong pair of ledgers while reporting
+healthy.
+
+The fix is to stop treating the file as the record of what exists. **The chain is
+the record; the file is a cache of it.** A CREATE address is
+`keccak256(rlp([sender, nonce]))` — knowable *before* the transaction is sent —
+so the script predicts the address, writes that intent down, then deploys. Any
+later run can find the contract even though nothing recorded its success.
+
+Adoption is verified, not assumed: code at an address proves something is there,
+not that it is ours, so it reads back the configured router and refuses on a
+mismatch.
+
+Configuration became a **desired state** rather than a script of transactions.
+`converge()` reads what the chain says and sends only the difference:
+
+```text
+ ~ shipper 0xf39F...  (is false, want true)
+   destination 0x9fe4...
+1 of 2 steps need a transaction.
+```
+
+Run it twice and the second run sends nothing. `--dry-run` prints the plan
+without sending, which makes "is production configured the way we think it is?"
+a question you can actually ask.
+
+### Reconciliation resumes instead of rescanning
+
+Reading every log from the deployment block fails on a real network three ways:
+cost grows with the age of the chain rather than with usage; providers reject
+ranges over ~10,000 blocks outright, and **a monitor that is down looks exactly
+like a system with no findings**; and the newest blocks are not settled.
+
+[`src/indexer.ts`](src/indexer.ts) fetches in bounded chunks, commits a
+checkpoint after *every* chunk, holds back a confirmations buffer, dedupes on
+`transactionHash:logIndex`, and writes state temp-then-rename so a torn file is
+never observed. Enable it with `--index-dir`.
+
+### The bug that only appeared on a real node
+
+Wiring the index in produced a false `LEDGER_GAP` on a live chain. Contract state
+was read at the head while events stopped at the safe head, so a shipment inside
+the buffer showed in `totalShipped` with no matching event — reported as missing
+cargo.
+
+On a real network that is **a false alarm on every shipment** for the length of
+the buffer, which is precisely how an alert channel stops being believed. Every
+contract read is now pinned to the height the events are complete to, so the
+report describes one consistent view of each chain. There is a regression test:
+`does not report a shipment inside the confirmations buffer as missing`.
+
+See [ADR 0009](docs/adr/0009-chain-is-the-record-of-what-exists.md) and
+[ADR 0010](docs/adr/0010-durable-log-index.md). **Reorg rollback is deliberately
+not here** — the buffer makes a deep reorg unlikely, not impossible, and
+[trust-assumptions.md](docs/trust-assumptions.md) says so rather than implying
+this is reorg-safe.
+
 ## Planned checkpoints
 
 1. ~~Local destination inbox and state changes.~~ Done.
@@ -607,6 +674,9 @@ event — but only if somebody is watching, which
 7. ~~Testnet deployment scaffolding, key handling, and per-lane latency.~~ Done (awaiting a funded deploy).
 8. ~~Threat model, invariants, trust assumptions, ADRs, and a failure runbook.~~ Done.
 9. ~~Token-bucket rate limits and separated admin powers.~~ Done.
+10. ~~Idempotent deployment and configuration; durable, resumable log index.~~ Done.
+11. Multi-RPC resilience and stale-read detection; reorg and finality handling;
+    stuck-message diagnosis; metrics, tracing and SLOs. All want a live lane.
 
 ## Reference
 

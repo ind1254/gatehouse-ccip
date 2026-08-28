@@ -10,3 +10,6 @@ dist/
 deployments/local.json
 
 deployments/testnet.json
+
+# Resumable log index state is a local cache of chain data.
+.gatehouse/

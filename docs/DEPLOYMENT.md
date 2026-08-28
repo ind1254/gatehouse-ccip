@@ -65,6 +65,12 @@ Each writes its half of `deployments/testnet.json`, including the block it was
 deployed in — which is where the reconciler starts scanning, so it never asks an
 RPC provider for the entire history of the chain.
 
+**Both scripts are safe to run again**, and you should feel free to. They ask the
+chain what already exists rather than trusting the file — including in the window
+where a previous run's transaction landed but the run died before recording it.
+A rerun adopts what is there and deploys nothing. See
+[adr/0009-chain-is-the-record-of-what-exists.md](adr/0009-chain-is-the-record-of-what-exists.md).
+
 ## 4. Introduce them to each other
 
 ```bash
@@ -73,7 +79,12 @@ npx hardhat run scripts/configure-testnet.ts --network baseSepolia
 ```
 
 Twice, because each side holds its own allowlist and neither chain can write to
-the other's storage. Two chains means two transactions.
+the other's storage.
+
+Configuration is a desired state, not a script: it reads what the chain says and
+sends only the difference. Run it twice and the second run sends nothing. Add
+`--dry-run` to print the plan without sending anything, which also answers "is
+this configured the way we think it is?" against a live deployment.
 
 Note the ordering inside the script: **rate limits and thresholds are set before
 the allowlist entries that make shipping possible**, so neither desk is ever
@@ -98,6 +109,17 @@ npm run gatehouse -- reconcile --deployment deployments/testnet.json ...
 ```
 
 Two RPC endpoints now, because the desks are on different chains.
+
+Add `--index-dir .gatehouse` to keep a resumable log index instead of reading
+from the deployment block every time. The first run indexes; later runs resume
+from the checkpoint and read only new blocks. It also chunks well under the
+common 10,000-block provider ceiling, so the request that gets *rejected* for
+being too large never happens.
+
+The index holds back 12 blocks before committing, so a shipment made seconds ago
+will not appear until it has settled. That is deliberate: contract state is read
+at the same height as the events, so the report never claims cargo is missing
+when it is merely recent.
 
 Immediately after shipping, expect `MESSAGES_IN_FLIGHT` and a healthy report.
 A message is not late until it passes the lane's expected latency, which is

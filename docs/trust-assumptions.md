@@ -120,9 +120,30 @@ The reconciler believes what its RPC endpoints tell it about logs and state.
 **If false.** A provider that silently truncates a log range makes the ledgers
 appear to agree — the "quietly wrong monitor" of T9.
 
-**Partly handled.** Scanning starts at each contract's recorded deployment block
-rather than genesis, which keeps ranges small. **Not handled:** no cross-checking
-against a second provider, and no reorg-aware rescan of recent blocks.
+**Partly handled.** Scanning starts at each contract's recorded deployment block,
+never genesis. With `--index-dir`, reads are also chunked well under the common
+10,000-block provider ceiling and resume from a persisted checkpoint, so the
+request that gets *rejected* for being too large never happens.
+
+**Not handled: a single provider is still believed on its word.** There is no
+second endpoint to cross-check against, no detection of a provider that
+disagrees with its peers, and no failover. That is the next piece of work and
+the most valuable remaining item.
+
+## A8b. Recent blocks will not be reorganised out from under the index
+
+The index holds back `confirmations` blocks (default 12) before committing a
+checkpoint, so logs from unsettled blocks are not recorded as final.
+
+**If false.** A reorg deeper than the buffer replaces a block the index already
+committed. Nothing detects it: there is **no block-hash tracking and no
+rollback**. The index would carry a log for a transaction that no longer
+exists, and the ledgers would disagree for a reason the tooling cannot explain.
+
+**Why it is like this.** The buffer makes it unlikely, not impossible.
+Distinguishing observed from confirmed from finalised — and replaying from
+before a replaced block — is real work and is stated as outstanding rather than
+implied to be done.
 
 ## A9. Testnet only
 

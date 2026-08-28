@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createPublicClient, http, type Address, type Hex } from "viem";
-import { reconcile, type BridgeClients, type Deployment, type Finding } from "../src/reconcile.js";
+import {
+  reconcile,
+  type BridgeClients,
+  type Deployment,
+  type Finding,
+  type ReconcileOptions,
+} from "../src/reconcile.js";
 import {
   ALL_LANES,
   MESSAGE_COUNT_BUCKET,
@@ -33,6 +39,7 @@ Options:
   --rpc         source-chain JSON-RPC      (default: http://127.0.0.1:8545)
   --dest-rpc    destination-chain JSON-RPC (default: same as --rpc)
   --deployment  deployment JSON to read (default: deployments/local.json)
+  --index-dir   persist a resumable log index here (default: read from scratch)
   --json        machine-readable output
 
 Exit codes:
@@ -47,6 +54,7 @@ interface Args {
   rpc: string;
   destRpc: string;
   deployment: string;
+  indexDir: string;
   json: boolean;
 }
 
@@ -55,6 +63,7 @@ function parseArgs(argv: string[]): Args {
   let rpc = process.env.GATEHOUSE_RPC ?? "http://127.0.0.1:8545";
   let destRpc = process.env.GATEHOUSE_DEST_RPC ?? "";
   let deployment = process.env.GATEHOUSE_DEPLOYMENT ?? "deployments/local.json";
+  let indexDir = process.env.GATEHOUSE_INDEX_DIR ?? "";
   let json = false;
 
   for (let i = 0; i < argv.length; i++) {
@@ -62,6 +71,7 @@ function parseArgs(argv: string[]): Args {
     if (arg === "--rpc") rpc = argv[++i] ?? rpc;
     else if (arg === "--dest-rpc") destRpc = argv[++i] ?? destRpc;
     else if (arg === "--deployment") deployment = argv[++i] ?? deployment;
+    else if (arg === "--index-dir") indexDir = argv[++i] ?? indexDir;
     else if (arg === "--json") json = true;
     else positional.push(arg);
   }
@@ -72,7 +82,23 @@ function parseArgs(argv: string[]): Args {
     rpc,
     destRpc: destRpc || rpc,
     deployment,
+    indexDir,
     json,
+  };
+}
+
+/**
+ * Without an index directory every run reads from the deployment block. That is
+ * fine against one local node and wrong against a real network, where the cost
+ * grows with the age of the chain and providers reject oversized ranges.
+ */
+function indexOptions(args: Args): ReconcileOptions {
+  if (!args.indexDir) return {};
+  return {
+    index: {
+      sourceStatePath: join(args.indexDir, "source.json"),
+      destinationStatePath: join(args.indexDir, "destination.json"),
+    },
   };
 }
 
@@ -200,7 +226,7 @@ async function main() {
     }
 
     case "reconcile": {
-      const report = await reconcile(clients, deployment);
+      const report = await reconcile(clients, deployment, indexOptions(args));
       if (args.json) {
         console.log(JSON.stringify(report, bigintReplacer, 2));
         process.exit(report.healthy ? 0 : 1);
@@ -249,7 +275,7 @@ async function main() {
         process.exit(2);
       }
 
-      const report = await reconcile(clients, deployment);
+      const report = await reconcile(clients, deployment, indexOptions(args));
       const message = report.messages.find(
         (candidate) => candidate.messageId.toLowerCase() === messageId.toLowerCase(),
       );
