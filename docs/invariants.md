@@ -77,20 +77,31 @@ constant here because *nothing is minted or burned at all*. That is a much weake
 claim than a burn/mint invariant. A real supply-conservation proof needs token
 pools on live testnets. See [adr/0001-transfer-not-burn-mint.md](adr/0001-transfer-not-burn-mint.md).
 
-## I5. No sender can exceed its rate limit
+## I5. No sender can exceed its rate limit, and no boundary can be burst
 
 Rate limits bound behaviour regardless of who is asking, including a sender that
-is authenticated, allowlisted, and compromised.
+is authenticated, allowlisted, and compromised. A token bucket — burst capacity
+plus continuous refill — has no window boundary to exploit.
 
 - ✅ `caps how many deliveries fit in one window`
 - ✅ `caps how much cargo leaves in one window`
 - ✅ `bounds a compromised but still-allowlisted sender at the inbox`
-- ✅ `refills the budget when the window rolls`
+- ✅ `refills continuously instead of resetting`
+- ✅ `grants a partial refill part-way through a period`
+- ✅ `never accrues past its capacity, however long it idles`
 - ✅ `treats an unconfigured limit as no limit`
 
-That last test documents a real sharp edge: a limit that has never been
-configured is **unlimited**, not zero. Which is why deployment configures limits
-before allowlists — see [adr/0005-configure-limits-before-allowlists.md](adr/0005-configure-limits-before-allowlists.md).
+Budgets are keyed by **(lane, token)**, with an aggregate bucket consumed
+alongside the specific one, so one lane cannot spend another's allowance and a
+global cap still bounds the total:
+
+- ✅ `does not let one lane spend another lane's budget`
+- ✅ `bounds the total across every lane with the aggregate bucket`
+
+A limit that has never been configured is **unlimited**, not zero. That is why
+deployment configures limits before allowlists, and why *disabling* a limit
+counts as widening. See
+[adr/0007-token-bucket-over-fixed-window.md](adr/0007-token-bucket-over-fixed-window.md).
 
 ## I6. A pause stops new exposure without corrupting in-flight state
 
@@ -105,17 +116,44 @@ The third is the one that makes the pause meaningful. A hold that matures *durin
 an incident does not settle: if release could complete while paused, an attacker
 would simply wait out the delay while responders worked.
 
-## I7. Only the owner can widen trust; only the guardian or owner can narrow it
+## I7. No single key can both widen trust and move funds
 
 - ✅ `lets only the owner change who is trusted`
 - ✅ `refuses a stranger at the emergency stop`
 - ✅ `does not let the guardian restart the bridge`
 - ✅ `refuses a stranger who is not an authorised shipper`
 - ✅ `refuses a shipper aiming at an unapproved receiving desk`
-- ✅ `lets the owner move received cargo and refuses everyone else`
+- ✅ `lets the treasury role move received cargo and refuses everyone else`
+
+Powers are split three ways — guardian (pause), config (trust and limits) and
+treasury (withdraw) — and the owner has **no implicit bypass**:
+
+- ✅ `does not let a config admin move funds`
+- ✅ `does not let a treasurer decide who is trusted`
+- ✅ `gives the owner no implicit bypass of the treasury role`
+- ✅ `hands ownership over in two steps`
+
+To withdraw, an owner must first grant itself the treasury role — and granting is
+a widening change, so that escalation is announced rather than instant.
 
 Stopping is a reflex and belongs on a hot key. Restarting is a judgment and stays
-with the owner. See [adr/0004-split-guardian-and-owner.md](adr/0004-split-guardian-and-owner.md).
+with the owner. See [adr/0004-split-guardian-and-owner.md](adr/0004-split-guardian-and-owner.md)
+and [adr/0008-separated-powers-and-asymmetric-timelock.md](adr/0008-separated-powers-and-asymmetric-timelock.md).
+
+## I7b. Widening waits; tightening never does
+
+A change that grants trust, raises a cap, or shortens a delay must be announced
+and wait out `trustDelay`. A change that revokes, lowers, or lengthens applies
+immediately, because making a system stricter is always safe to do now.
+
+- ✅ `refuses to widen trust without a scheduled action`
+- ✅ `still revokes trust immediately`
+- ✅ `waits out the delay, then executes exactly the scheduled call`
+- ✅ `lets a guardian cancel a widening before it matures`
+- ✅ `delays raising a limit but not lowering one`
+
+The action id is the calldata itself, so a schedule authorises exactly one call
+with exactly one set of arguments, and it is consumed on use.
 
 ## I8. Held cargo cannot be withdrawn or settled early
 

@@ -14,6 +14,7 @@ import { network } from "hardhat";
 const ONE_HOUR = 3600n;
 const ONE_TOKEN = parseEther("1");
 const SEPOLIA_SELECTOR = 16015286601757825753n;
+const MESSAGE_COUNT_BUCKET = "0x0000000000000000000000000000000000000000" as const;
 
 const { viem } = await network.getOrCreate("localhost");
 const [operator, guardian] = await viem.getWalletClients();
@@ -39,25 +40,44 @@ await outbox.write.setDestination([SEPOLIA_SELECTOR, inbox.address, true]);
 await outbox.write.setToken([testToken, true]);
 await inbox.write.setSourceWarehouse([SEPOLIA_SELECTOR, outbox.address, true]);
 
-// Controls: a guardian on both desks, a delivery-rate cap, and a hold on
-// anything at or above two tokens.
-await outbox.write.setGuardian([guardian.account.address]);
-await inbox.write.setGuardian([guardian.account.address]);
-await outbox.write.setLimit(["0x0000000000000000000000000000000000000000", true, 10n, ONE_HOUR]);
-await inbox.write.setLimit(["0x0000000000000000000000000000000000000000", true, 10n, ONE_HOUR]);
+// Roles: move the emergency stop onto a second wallet and take it away from
+// the deployer, so the local deployment actually demonstrates the split rather
+// than describing it. CONFIG and TREASURY stay with the deployer for
+// convenience; a testnet deployment separates all three.
+const GUARDIAN_ROLE = await outbox.read.GUARDIAN_ROLE();
+await outbox.write.setRole([GUARDIAN_ROLE, guardian.account.address, true]);
+await outbox.write.setRole([GUARDIAN_ROLE, operator.account.address, false]);
+await inbox.write.setRole([GUARDIAN_ROLE, guardian.account.address, true]);
+await inbox.write.setRole([GUARDIAN_ROLE, operator.account.address, false]);
+
+// Limits: ten deliveries an hour on this lane, refilling continuously rather
+// than resetting, so there is no window boundary to burst across.
+const deliveryBudget = {
+  enabled: true,
+  capacity: 10n,
+  refillAmount: 10n,
+  refillPeriod: ONE_HOUR,
+} as const;
+
+await outbox.write.setLimit([SEPOLIA_SELECTOR, MESSAGE_COUNT_BUCKET, deliveryBudget]);
+await inbox.write.setLimit([SEPOLIA_SELECTOR, MESSAGE_COUNT_BUCKET, deliveryBudget]);
+
+// A hold on anything at or above two tokens.
 await inbox.write.setLargeTransferThreshold([testToken, ONE_TOKEN * 2n]);
 const hash = await inbox.write.setReleaseDelay([ONE_HOUR]);
 await publicClient.waitForTransactionReceipt({ hash });
 
 const deployment = {
   network: "localhost",
-  chainSelector: SEPOLIA_SELECTOR.toString(),
   outbox: outbox.address,
   inbox: inbox.address,
   ccip: ccip.address,
   router: sourceRouter,
   linkToken,
   tokens: [{ symbol: "CCIP-BnM", source: testToken, destination: testToken }],
+  // One local chain plays both ends, so both selectors are the same one.
+  sourceChainSelector: SEPOLIA_SELECTOR.toString(),
+  destinationChainSelector: SEPOLIA_SELECTOR.toString(),
   // One local chain, so delivery is instant. A testnet lane sets this from
   // the source chain finality time.
   expectedLatencySeconds: 5,

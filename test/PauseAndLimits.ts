@@ -18,7 +18,11 @@ describe("Emergency pause", function () {
     const { viem, outbox, inbox } = await deployWarehouses();
     const [, guardian] = await viem.getWalletClients();
 
-    await outbox.write.setGuardian([guardian.account.address]);
+    await outbox.write.setRole([
+      await outbox.read.GUARDIAN_ROLE(),
+      guardian.account.address,
+      true,
+    ]);
     await outbox.write.pause({ account: guardian.account });
 
     await viem.assertions.revertWithCustomError(
@@ -38,7 +42,11 @@ describe("Emergency pause", function () {
     const { viem, outbox, inbox } = await deployWarehouses();
     const [, guardian] = await viem.getWalletClients();
 
-    await outbox.write.setGuardian([guardian.account.address]);
+    await outbox.write.setRole([
+      await outbox.read.GUARDIAN_ROLE(),
+      guardian.account.address,
+      true,
+    ]);
     await outbox.write.pause({ account: guardian.account });
 
     // Stopping is a reflex. Restarting is a decision, and it stays with the
@@ -65,7 +73,7 @@ describe("Emergency pause", function () {
     await viem.assertions.revertWithCustomError(
       outbox.write.pause({ account: stranger.account }),
       outbox,
-      "NotGuardianOrOwner",
+      "MissingRole",
     );
   });
 
@@ -110,7 +118,7 @@ describe("Rate limits", function () {
     const { viem, outbox, inbox } = await deployWarehouses();
 
     // Two deliveries an hour, counted in the zero-address bucket.
-    await outbox.write.setLimit([zeroAddress, true, 2n, BigInt(ONE_HOUR)]);
+    await outbox.write.setLimit([SEPOLIA_SELECTOR, zeroAddress, { enabled: true, capacity: 2n, refillAmount: 2n, refillPeriod: BigInt(ONE_HOUR) }]);
 
     await outbox.write.shipDelivery([SEPOLIA_SELECTOR, inbox.address, "one"]);
     await outbox.write.shipDelivery([SEPOLIA_SELECTOR, inbox.address, "two"]);
@@ -128,15 +136,15 @@ describe("Rate limits", function () {
 
   it("refills the budget when the window rolls", async function () {
     const { viem, outbox, inbox, networkHelpers } = await deployWarehouses();
-    await outbox.write.setLimit([zeroAddress, true, 2n, BigInt(ONE_HOUR)]);
+    await outbox.write.setLimit([SEPOLIA_SELECTOR, zeroAddress, { enabled: true, capacity: 2n, refillAmount: 2n, refillPeriod: BigInt(ONE_HOUR) }]);
 
     await outbox.write.shipDelivery([SEPOLIA_SELECTOR, inbox.address, "one"]);
     await outbox.write.shipDelivery([SEPOLIA_SELECTOR, inbox.address, "two"]);
-    assert.equal(await outbox.read.remainingAllowance([zeroAddress]), 0n);
+    assert.equal(await outbox.read.remainingAllowance([SEPOLIA_SELECTOR, zeroAddress]), 0n);
 
     await networkHelpers.time.increase(ONE_HOUR + 1);
 
-    assert.equal(await outbox.read.remainingAllowance([zeroAddress]), 2n);
+    assert.equal(await outbox.read.remainingAllowance([SEPOLIA_SELECTOR, zeroAddress]), 2n);
     await outbox.write.shipDelivery([SEPOLIA_SELECTOR, inbox.address, "three"]);
     assert.equal(await inbox.read.deliveryCount(), 3n);
   });
@@ -144,7 +152,7 @@ describe("Rate limits", function () {
   it("caps how much cargo leaves in one window", async function () {
     const { viem, outbox, inbox, testToken } = await deployWarehouses();
     await dripTokens(viem, testToken, outbox.address, 5);
-    await outbox.write.setLimit([testToken, true, ONE_TOKEN * 2n, BigInt(ONE_HOUR)]);
+    await outbox.write.setLimit([SEPOLIA_SELECTOR, testToken, { enabled: true, capacity: ONE_TOKEN * 2n, refillAmount: ONE_TOKEN * 2n, refillPeriod: BigInt(ONE_HOUR) }]);
 
     await outbox.write.shipCargo([
       SEPOLIA_SELECTOR,
@@ -173,7 +181,7 @@ describe("Rate limits", function () {
     const { viem, outbox, inbox } = await deployWarehouses();
 
     // The outbox is trusted and unlimited. The inbox limits it anyway.
-    await inbox.write.setLimit([zeroAddress, true, 1n, BigInt(ONE_HOUR)]);
+    await inbox.write.setLimit([SEPOLIA_SELECTOR, zeroAddress, { enabled: true, capacity: 1n, refillAmount: 1n, refillPeriod: BigInt(ONE_HOUR) }]);
 
     await outbox.write.shipDelivery([SEPOLIA_SELECTOR, inbox.address, "one"]);
 
@@ -182,7 +190,7 @@ describe("Rate limits", function () {
       encodeErrorResult({
         abi: inbox.abi,
         errorName: "RateLimitExceeded",
-        args: [zeroAddress, 1n, 1n, 1n],
+        args: [SEPOLIA_SELECTOR, zeroAddress, 1n, 0n],
       }),
     );
 
@@ -193,8 +201,8 @@ describe("Rate limits", function () {
     const { outbox, testToken } = await deployWarehouses();
     const unlimited = 2n ** 256n - 1n;
 
-    assert.equal(await outbox.read.remainingAllowance([testToken]), unlimited);
-    assert.equal(await outbox.read.remainingAllowance([zeroAddress]), unlimited);
+    assert.equal(await outbox.read.remainingAllowance([SEPOLIA_SELECTOR, testToken]), unlimited);
+    assert.equal(await outbox.read.remainingAllowance([SEPOLIA_SELECTOR, zeroAddress]), unlimited);
   });
 });
 

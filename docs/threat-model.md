@@ -67,8 +67,10 @@ message and are carried faithfully across the bridge into the monitoring layer.
 | Anonymous EOA | Call any public function; send tokens to any address |
 | Hostile contract on any CCIP chain | Send CCIP messages to our inbox through the real router |
 | Authorised shipper | Ship within allowlists and limits |
-| Guardian | Pause either desk |
-| Owner | Everything: allowlists, limits, thresholds, withdrawals, unpause |
+| Guardian | Pause either desk; cancel a scheduled widening |
+| Config admin | Edit allowlists, limits and thresholds; schedule widening changes |
+| Treasurer | Withdraw settled cargo |
+| Owner | Grant and revoke roles, unpause, set the trust delay. **No implicit bypass of the other roles.** |
 | Token administrator | Mint the cargo token (**outside our control**) |
 
 ---
@@ -112,6 +114,10 @@ total loss into a slow one, and buys the hours that detection and the pause need
 to be useful. It is worthless without the alerting in
 [failure-runbook.md](failure-runbook.md).
 
+The limiter is a token bucket keyed by (lane, token), so there is no window
+boundary to burst across, and one lane cannot spend another lane's budget. See
+[adr/0007-token-bucket-over-fixed-window.md](adr/0007-token-bucket-over-fixed-window.md).
+
 ### T4. Cargo shipped to an address that cannot receive it
 
 **Attack.** Not an attack — a typo, or a stale address after a redeploy. CCIP
@@ -127,25 +133,35 @@ Reconciliation catches any that slip through:
 **Residual.** Anything already sent is unrecoverable. This is the strongest
 argument in the project for validating on the cheap side of the bridge.
 
-### T5. The owner key is stolen
+### T5. An admin key is stolen
 
-**Attack.** One call: `withdrawCargo(token, attacker, everything)`. No CCIP, no
-router, no fee, no message. Or widen the allowlists and ship the outbox's balance
-anywhere.
+**Attack.** Previously one call: `withdrawCargo(token, attacker, everything)`.
+No CCIP, no router, no fee, no message.
 
-**Not mitigated. This is the largest residual risk in the system.**
+**Partly mitigated, and this is still the largest residual risk.**
 
-Of the three inbox gates, `onlyRouter` holds but is irrelevant — the attacker
-goes *through* the router legitimately — and `processedMessages` holds but is
-nearly worthless, since each new message has a fresh ID. The source allowlist is
-simply rewritten.
+Powers are now split, and no role can do both halves of the job:
 
-An allowlist is a rule, and a rule is only as strong as the authority that can
-rewrite it.
+| Key stolen | What it buys | What it does not |
+|---|---|---|
+| Guardian | Pause both desks. Denial of service. | Cannot unpause, widen, or withdraw |
+| Config | Widen allowlists, raise caps — **all delayed and cancellable** | Cannot withdraw |
+| Treasury | Withdraw settled cargo | Cannot decide who is trusted; cannot touch held cargo |
+| Owner | Grant itself any role — **delayed and cancellable** | Nothing instantly |
 
-**Planned:** multisig or timelock as owner; split allowlist-admin, pauser, and
-shipper into separate keys; a timelock in front of allowlist *additions* so a
-stolen key becomes a detectable event rather than an instant loss.
+The owner has no implicit bypass, so escalation from owner to treasury is a
+`setRole` call, which is a widening change: it must be scheduled, it waits out
+`trustDelay`, it emits `ActionScheduled`, and a guardian can cancel it. That
+turns "one transaction, funds gone" into a visible event with a response window.
+
+**Residual.** A delay is only worth what the watching is worth. An attacker
+holding the owner key, with `trustDelay` set to zero, or with nobody monitoring
+`ActionScheduled`, still wins — it just takes longer. The remaining fixes are
+organisational: a multisig owner, and monitoring wired to the schedule events.
+
+Note also that `trustDelay` starts at **zero**, and all three roles start on the
+deployer. A deployment that never splits them has none of this protection;
+`scripts/configure-testnet.ts` prints the exact calls and the required ordering.
 
 ### T6. The guardian key is stolen
 
@@ -228,7 +244,7 @@ heavier receiver.
 
 ## Ranked residual risk
 
-1. **Owner key compromise** — total loss, no mitigation today (T5)
+1. **Admin key compromise** — split into roles and widening is now delayed and cancellable, but an owner key plus a zero delay, or nobody watching the schedule events, is still total loss (T5)
 2. **Unbacked mint** — detectable only, never preventable from this side (T7)
 3. **Slow drain by a compromised shipper** — bounded, needs alerting to matter (T3)
 4. **Silently wrong monitoring** — looks healthy while it is not (T9)

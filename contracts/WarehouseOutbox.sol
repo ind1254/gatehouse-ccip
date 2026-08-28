@@ -93,7 +93,8 @@ contract WarehouseOutbox is WarehouseControls {
     // ----------------------------------------------------------------- admin
 
     /// @notice Allow (or stop allowing) an account to ship from this desk.
-    function setShipper(address account, bool allowed) external onlyOwner {
+    function setShipper(address account, bool allowed) external onlyRole(CONFIG_ROLE) {
+        _requireDelayIfWidening(allowed);
         isShipper[account] = allowed;
         emit ShipperSet(account, allowed);
     }
@@ -103,19 +104,21 @@ contract WarehouseOutbox is WarehouseControls {
         uint64 destinationChainSelector,
         address receiver,
         bool allowed
-    ) external onlyOwner {
+    ) external onlyRole(CONFIG_ROLE) {
+        _requireDelayIfWidening(allowed);
         allowedDestination[destinationChainSelector][receiver] = allowed;
         emit DestinationSet(destinationChainSelector, receiver, allowed);
     }
 
     /// @notice Set how much gas the destination desk may spend on arrival.
-    function setDestinationGasLimit(uint256 newGasLimit) external onlyOwner {
+    function setDestinationGasLimit(uint256 newGasLimit) external onlyRole(CONFIG_ROLE) {
         destinationGasLimit = newGasLimit;
         emit DestinationGasLimitSet(newGasLimit);
     }
 
     /// @notice Allow (or stop allowing) a token to be shipped as cargo.
-    function setToken(address token, bool allowed) external onlyOwner {
+    function setToken(address token, bool allowed) external onlyRole(CONFIG_ROLE) {
+        _requireDelayIfWidening(allowed);
         allowedToken[token] = allowed;
         emit TokenSet(token, allowed);
     }
@@ -189,9 +192,9 @@ contract WarehouseOutbox is WarehouseControls {
             amount
         );
 
-        // Gate 4: does this fit in the token's budget for the current window?
-        // Applies to every shipper, including a compromised one.
-        _consumeLimit(token, amount);
+        // Gate 4: does this fit the budget for this lane and token? Applies to
+        // every shipper, including a compromised one.
+        _consumeLimit(destinationChainSelector, token, amount);
 
         // The router pulls the cargo from this contract, exactly as it pulls
         // the fee. forceApprove clears any stale allowance first.
@@ -216,7 +219,7 @@ contract WarehouseOutbox is WarehouseControls {
 
         // Every shipment costs one from the delivery-count budget. This is what
         // bounds a flood of individually-valid messages.
-        _consumeLimit(MESSAGE_COUNT_BUCKET, 1);
+        _consumeLimit(destinationChainSelector, MESSAGE_COUNT_BUCKET, 1);
 
         evm2AnyMessage.feeToken = address(feeToken);
 
@@ -239,7 +242,11 @@ contract WarehouseOutbox is WarehouseControls {
     // -------------------------------------------------------------- treasury
 
     /// @notice Recover tokens held by this desk.
-    function withdraw(address token, address to, uint256 amount) external onlyOwner {
+    function withdraw(
+        address token,
+        address to,
+        uint256 amount
+    ) external onlyRole(TREASURY_ROLE) {
         IERC20(token).safeTransfer(to, amount);
     }
 

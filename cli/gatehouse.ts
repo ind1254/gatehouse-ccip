@@ -3,7 +3,13 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createPublicClient, http, type Address, type Hex } from "viem";
 import { reconcile, type BridgeClients, type Deployment, type Finding } from "../src/reconcile.js";
-import { MESSAGE_COUNT_BUCKET, readStatus } from "../src/status.js";
+import {
+  ALL_LANES,
+  MESSAGE_COUNT_BUCKET,
+  readStatus,
+  type LimitStatus,
+  type RoleName,
+} from "../src/status.js";
 
 /**
  * gatehouse - a read-only operator console.
@@ -81,6 +87,8 @@ function loadDeployment(path: string): Deployment {
       outbox: parsed.outbox,
       inbox: parsed.inbox,
       tokens: parsed.tokens ?? [],
+      sourceChainSelector: parsed.sourceChainSelector,
+      destinationChainSelector: parsed.destinationChainSelector,
       expectedLatencySeconds: parsed.expectedLatencySeconds,
       fromBlock: parsed.fromBlock,
     };
@@ -97,20 +105,54 @@ const SEVERITY_MARK: Record<Finding["severity"], string> = {
   alarm: " !!",
 };
 
-function formatLimit(
-  enabled: boolean,
-  amountPerWindow: bigint,
-  windowSeconds: bigint,
-  remaining: bigint,
-): string {
-  if (!enabled) return "unlimited";
-  return `${remaining}/${amountPerWindow} left, window ${windowSeconds}s`;
+function formatLimit(limit: LimitStatus): string {
+  if (!limit.enabled) return "unlimited";
+  return (
+    `${limit.remaining}/${limit.capacity} left, ` +
+    `refills ${limit.refillAmount} per ${limit.refillPeriod}s`
+  );
 }
 
 function label(token: Address): string {
-  return token.toLowerCase() === MESSAGE_COUNT_BUCKET
-    ? "deliveries"
-    : token;
+  return token.toLowerCase() === MESSAGE_COUNT_BUCKET ? "deliveries" : token;
+}
+
+function laneLabel(lane: bigint): string {
+  return lane === ALL_LANES ? "all lanes" : `lane ${lane}`;
+}
+
+function printDesk(desk: {
+  address: Address;
+  owner: Address;
+  pendingOwner: Address;
+  paused: boolean;
+  trustDelay: bigint;
+  roles: Record<RoleName, Address[]>;
+  limits: LimitStatus[];
+}) {
+  console.log(`  address            ${desk.address}`);
+  console.log(`  owner              ${desk.owner}`);
+  if (desk.pendingOwner !== "0x0000000000000000000000000000000000000000") {
+    console.log(`  PENDING OWNER      ${desk.pendingOwner} (not yet accepted)`);
+  }
+  console.log(`  paused             ${desk.paused ? "YES" : "no"}`);
+  console.log(
+    `  trust delay        ${desk.trustDelay}s` +
+      (desk.trustDelay === 0n ? "  (widening applies immediately)" : ""),
+  );
+
+  for (const role of ["GUARDIAN", "CONFIG", "TREASURY"] as RoleName[]) {
+    const holders = desk.roles[role];
+    console.log(
+      `  ${role.toLowerCase().padEnd(18)}${holders.length > 0 ? holders.join(", ") : "(nobody)"}`,
+    );
+  }
+
+  for (const limit of desk.limits) {
+    console.log(
+      `  limit ${laneLabel(limit.lane).padEnd(22)} ${label(limit.token).padEnd(12)} ${formatLimit(limit)}`,
+    );
+  }
 }
 
 async function main() {
@@ -146,30 +188,14 @@ async function main() {
       }
 
       console.log("Shipping desk (source)");
-      console.log(`  address            ${status.outbox.address}`);
-      console.log(`  owner              ${status.outbox.owner}`);
-      console.log(`  guardian           ${status.outbox.guardian}`);
-      console.log(`  paused             ${status.outbox.paused ? "YES" : "no"}`);
       console.log(`  shipped            ${status.outbox.shippedCount}`);
       console.log(`  destination gas    ${status.outbox.destinationGasLimit}`);
-      for (const limit of status.outbox.limits) {
-        console.log(
-          `  limit ${label(limit.token).padEnd(12)} ${formatLimit(limit.enabled, limit.amountPerWindow, limit.windowSeconds, limit.remaining)}`,
-        );
-      }
+      printDesk(status.outbox);
 
       console.log("\nReceiving desk (destination)");
-      console.log(`  address            ${status.inbox.address}`);
-      console.log(`  owner              ${status.inbox.owner}`);
-      console.log(`  guardian           ${status.inbox.guardian}`);
-      console.log(`  paused             ${status.inbox.paused ? "YES" : "no"}`);
       console.log(`  delivered          ${status.inbox.deliveryCount}`);
       console.log(`  release delay      ${status.inbox.releaseDelay}s`);
-      for (const limit of status.inbox.limits) {
-        console.log(
-          `  limit ${label(limit.token).padEnd(12)} ${formatLimit(limit.enabled, limit.amountPerWindow, limit.windowSeconds, limit.remaining)}`,
-        );
-      }
+      printDesk(status.inbox);
       break;
     }
 

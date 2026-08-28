@@ -247,7 +247,7 @@ describe("The hazard the destination allowlist exists for", function () {
 });
 
 describe("Getting cargo back out", function () {
-  it("lets the owner move received cargo and refuses everyone else", async function () {
+  it("lets the treasury role move received cargo and refuses everyone else", async function () {
     const { viem, outbox, inbox, testToken } = await deployWarehouses();
     const [, stranger] = await viem.getWalletClients();
     await dripTokens(viem, testToken, outbox.address, 1);
@@ -266,7 +266,7 @@ describe("Getting cargo back out", function () {
         { account: stranger.account },
       ),
       inbox,
-      "OwnableUnauthorizedAccount",
+      "MissingRole",
     );
     assert.equal(await balanceOf(viem, testToken, inbox.address), ONE_TOKEN);
 

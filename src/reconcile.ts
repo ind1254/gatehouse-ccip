@@ -103,6 +103,13 @@ export interface Deployment {
   inbox: Address;
   tokens: TokenPair[];
   /**
+   * CCIP chain selectors for the two ends of the lane, as strings because they
+   * exceed Number.MAX_SAFE_INTEGER. Rate limits are keyed by lane, so status
+   * needs to know which lane each desk caps.
+   */
+  sourceChainSelector?: string;
+  destinationChainSelector?: string;
+  /**
    * How long this lane normally takes end to end. A message younger than this
    * is in flight, not late. Defaults low so local runs stay meaningful; a real
    * deployment sets it from the source chain's finality time.

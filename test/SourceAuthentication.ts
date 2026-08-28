@@ -215,7 +215,7 @@ describe("Ownership of the allowlists", function () {
         { account: stranger.account },
       ),
       inbox,
-      "OwnableUnauthorizedAccount",
+      "MissingRole",
     );
 
     await viem.assertions.revertWithCustomError(
@@ -223,7 +223,7 @@ describe("Ownership of the allowlists", function () {
         account: stranger.account,
       }),
       outbox,
-      "OwnableUnauthorizedAccount",
+      "MissingRole",
     );
 
     assert.equal(

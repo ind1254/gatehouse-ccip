@@ -19,6 +19,7 @@ import { BASE_SEPOLIA, ETHEREUM_SEPOLIA } from "../src/networks.js";
 const DEPLOYMENT_FILE = "deployments/testnet.json";
 const ONE_HOUR = 3600n;
 const ONE_TOKEN = 10n ** 18n;
+const MESSAGE_COUNT_BUCKET = "0x0000000000000000000000000000000000000000" as const;
 
 const deployment = JSON.parse(readFileSync(DEPLOYMENT_FILE, "utf8"));
 if (!deployment.source || !deployment.destination) {
@@ -33,6 +34,29 @@ const publicClient = await viem.getPublicClient();
 const [operator] = await viem.getWalletClients();
 const chainId = await publicClient.getChainId();
 
+/**
+ * The deployer holds GUARDIAN, CONFIG and TREASURY on a fresh deployment.
+ * Splitting them - and setting a non-zero trustDelay so widening changes have
+ * to be announced - is the last step, and it is deliberately left to a human
+ * with the keys rather than automated here.
+ */
+function printRoleWarning() {
+  console.log(
+    [
+      "",
+      "  ALL THREE ROLES ARE STILL THE DEPLOYER, AND trustDelay IS 0.",
+      "  Before this holds anything worth taking:",
+      "    setRole(GUARDIAN_ROLE, <hot key>, true)",
+      "    setRole(TREASURY_ROLE, <cold key>, true)",
+      "    setRole(<each role>, <deployer>, false)",
+      "    setTrustDelay(<seconds>)   // raising it applies immediately",
+      "",
+      "  Grant roles BEFORE raising the delay: granting is itself a widening",
+      "  change, so afterwards it would need scheduling too.",
+    ].join("\n"),
+  );
+}
+
 const sourceSelector = BigInt(deployment.source.chainSelector);
 const destinationSelector = BigInt(deployment.destination.chainSelector);
 
@@ -43,24 +67,28 @@ if (chainId === ETHEREUM_SEPOLIA.chainId) {
     deployment.source.outbox,
   );
 
-  // Caps first, so the desk is never live without them.
+  // Caps first, so the desk is never live without them. A token bucket, so
+  // there is no window boundary to burst across.
   await outbox.write.setLimit([
-    "0x0000000000000000000000000000000000000000",
-    true,
-    5n,
-    ONE_HOUR,
+    destinationSelector,
+    MESSAGE_COUNT_BUCKET,
+    { enabled: true, capacity: 5n, refillAmount: 5n, refillPeriod: ONE_HOUR },
   ]);
-  console.log("  delivery limit   5 per hour");
+  console.log("  delivery limit   burst 5, refills 5 per hour");
 
   if (deployment.source.testToken) {
     await outbox.write.setLimit([
+      destinationSelector,
       deployment.source.testToken,
-      true,
-      ONE_TOKEN * 5n,
-      ONE_HOUR,
+      {
+        enabled: true,
+        capacity: ONE_TOKEN * 5n,
+        refillAmount: ONE_TOKEN * 5n,
+        refillPeriod: ONE_HOUR,
+      },
     ]);
     await outbox.write.setToken([deployment.source.testToken, true]);
-    console.log(`  cargo limit      5 tokens per hour`);
+    console.log(`  cargo limit      burst 5 tokens, refills 5 per hour`);
     console.log(`  allowed token    ${deployment.source.testToken}`);
   } else {
     console.log("  NOTE: no testToken configured for this chain; cargo disabled");
@@ -68,20 +96,16 @@ if (chainId === ETHEREUM_SEPOLIA.chainId) {
 
   // Then the permissions that let anything move at all.
   await outbox.write.setShipper([operator.account.address, true]);
-  await outbox.write.setDestination([
+  const hash = await outbox.write.setDestination([
     destinationSelector,
     deployment.destination.inbox,
     true,
   ]);
-  const hash = await outbox.write.setGuardian([operator.account.address]);
   await publicClient.waitForTransactionReceipt({ hash });
 
   console.log(`  shipper          ${operator.account.address}`);
   console.log(`  destination      ${deployment.destination.inbox} on Base Sepolia`);
-  console.log(
-    "\n  GUARDIAN IS THE DEPLOYER. On a real system these are different keys:\n" +
-      "  the guardian is a hot key that can only pause, and the owner is cold.",
-  );
+  printRoleWarning();
 } else if (chainId === BASE_SEPOLIA.chainId) {
   console.log("configuring the receiving desk on Base Sepolia");
   const inbox = await viem.getContractAt(
@@ -90,25 +114,28 @@ if (chainId === ETHEREUM_SEPOLIA.chainId) {
   );
 
   await inbox.write.setLimit([
-    "0x0000000000000000000000000000000000000000",
-    true,
-    5n,
-    ONE_HOUR,
+    sourceSelector,
+    MESSAGE_COUNT_BUCKET,
+    { enabled: true, capacity: 5n, refillAmount: 5n, refillPeriod: ONE_HOUR },
   ]);
-  console.log("  delivery limit   5 per hour");
+  console.log("  delivery limit   burst 5, refills 5 per hour");
 
   if (deployment.destination.testToken) {
     await inbox.write.setLimit([
+      sourceSelector,
       deployment.destination.testToken,
-      true,
-      ONE_TOKEN * 5n,
-      ONE_HOUR,
+      {
+        enabled: true,
+        capacity: ONE_TOKEN * 5n,
+        refillAmount: ONE_TOKEN * 5n,
+        refillPeriod: ONE_HOUR,
+      },
     ]);
     await inbox.write.setLargeTransferThreshold([
       deployment.destination.testToken,
       ONE_TOKEN * 2n,
     ]);
-    console.log("  cargo limit      5 tokens per hour");
+    console.log("  cargo limit      burst 5 tokens, refills 5 per hour");
     console.log("  hold threshold   2 tokens");
   } else {
     console.log(
@@ -118,18 +145,18 @@ if (chainId === ETHEREUM_SEPOLIA.chainId) {
   }
 
   await inbox.write.setReleaseDelay([ONE_HOUR]);
-  await inbox.write.setSourceWarehouse([
+  const hash = await inbox.write.setSourceWarehouse([
     sourceSelector,
     deployment.source.outbox,
     true,
   ]);
-  const hash = await inbox.write.setGuardian([operator.account.address]);
   await publicClient.waitForTransactionReceipt({ hash });
 
   console.log("  release delay    3600s");
   console.log(
     `  trusted source   ${deployment.source.outbox} on Ethereum Sepolia`,
   );
+  printRoleWarning();
 } else {
   throw new Error(`Chain ${chainId} is not part of this deployment.`);
 }

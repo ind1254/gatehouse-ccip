@@ -22,10 +22,10 @@ your time:
 | Document | What it covers |
 |---|---|
 | [Threat model](docs/threat-model.md) | Ten attack scenarios, what stops each, and the **residual risk ranked** |
-| [Invariants](docs/invariants.md) | Twelve properties, each mapped to the test that asserts it |
+| [Invariants](docs/invariants.md) | Thirteen properties, each mapped to the test that asserts it |
 | [Trust assumptions](docs/trust-assumptions.md) | What this takes on faith, and what breaks if each is wrong |
 | [Failure runbook](docs/failure-runbook.md) | What an operator does at 3am, per finding |
-| [ADRs](docs/adr) | Six decisions, with the reasoning and the trade accepted |
+| [ADRs](docs/adr) | Eight decisions, with the reasoning and the trade accepted |
 | [Deployment](docs/DEPLOYMENT.md) | Testnet procedure and key handling |
 
 The invariants document cites tests by name, and
@@ -33,8 +33,11 @@ The invariants document cites tests by name, and
 test stops existing — so the documentation cannot rot quietly while still
 claiming to be enforced.
 
-The threat model's largest residual risk is stated plainly rather than buried:
-**a single owner key can withdraw everything, and that is not mitigated today.**
+The largest residual risk is stated plainly rather than buried: **admin-key
+compromise.** Powers are split three ways and widening changes are delayed and
+cancellable, which turns an instant loss into an observable event — but a delay
+nobody watches is a speed bump, and a deployment that never splits the roles has
+none of it. Both caveats are written down rather than assumed away.
 
 ## Checkpoint 1: a local warehouse inbox
 
@@ -534,6 +537,64 @@ because on a real deployment the desks are on different chains. Locally the same
 client is passed twice. Scanning starts at each contract's deployment block, so
 the reconciler never asks a provider for the entire history of a chain.
 
+## Checkpoint 9: limits that cannot be burst, powers that are separated
+
+Two items from a review of the project against how Chainlink's own limiter and
+admin tooling work. Both were contract-local and testable without a deployment.
+
+### A fixed window has a boundary, and a boundary can be burst
+
+The Checkpoint 5 limiter reset:
+
+```solidity
+if (block.timestamp >= windowStartedAt[token] + configured.windowSeconds) {
+    windowStartedAt[token] = block.timestamp;
+    windowUsed[token] = 0;          // hard reset
+}
+```
+
+Spend the whole budget at `t = 1`, spend it all again at `t = 3600`, and **four
+pass in 3,599 seconds against an intended two per hour.** It is now a token
+bucket — burst capacity plus continuous refill, no boundary to exploit — keyed by
+**(lane, token)** so one lane cannot spend another's allowance, plus an aggregate
+bucket that bounds the total across every lane.
+
+Two details worth the comments they carry: the rate is `refillAmount` per
+`refillPeriod` rather than per second, because integer per-second maths rounds
+"5 per hour" down to zero; and `lastRefillAt` advances only by the time the
+granted refill actually accounts for, so frequent small consumptions do not lose
+the remainder to integer division.
+
+### No key can both widen trust and move funds
+
+| Role | May do | Key |
+|---|---|---|
+| `GUARDIAN_ROLE` | pause, cancel a scheduled widening | hot |
+| `CONFIG_ROLE` | allowlists, limits, thresholds | warm |
+| `TREASURY_ROLE` | withdraw | cold |
+| owner (`Ownable2Step`) | grant/revoke roles, unpause | coldest |
+
+**The owner has no implicit bypass.** To withdraw it must first grant itself the
+treasury role — and granting is a widening change, so that escalation is
+scheduled, visible, and cancellable rather than instant.
+
+The rule [ADR 0005](docs/adr/0005-configure-limits-before-allowlists.md) argued in
+prose is now enforced in code: **widening waits, tightening never does.** Granting
+trust, raising a cap, shortening a delay — all must be announced and wait out
+`trustDelay`. Revoking, lowering, lengthening apply immediately, because making a
+system stricter is always safe to do now. Disabling a limit counts as widening,
+because an unconfigured limit is unlimited.
+
+The action id is `keccak256(abi.encode(address(this), msg.data))` — the calldata
+itself — so a schedule authorises exactly one call with exactly one set of
+arguments, and is consumed on use.
+
+See [ADR 0007](docs/adr/0007-token-bucket-over-fixed-window.md) and
+[ADR 0008](docs/adr/0008-separated-powers-and-asymmetric-timelock.md). This moves
+T5 in the threat model from instant total loss to an observable, cancellable
+event — but only if somebody is watching, which
+[trust-assumptions.md](docs/trust-assumptions.md) now says in as many words.
+
 ## Planned checkpoints
 
 1. ~~Local destination inbox and state changes.~~ Done.
@@ -545,6 +606,7 @@ the reconciler never asks a provider for the entire history of a chain.
 6b. ~~MCP server over the operator console, with the untrusted-input boundary.~~ Done.
 7. ~~Testnet deployment scaffolding, key handling, and per-lane latency.~~ Done (awaiting a funded deploy).
 8. ~~Threat model, invariants, trust assumptions, ADRs, and a failure runbook.~~ Done.
+9. ~~Token-bucket rate limits and separated admin powers.~~ Done.
 
 ## Reference
 

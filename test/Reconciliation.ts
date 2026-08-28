@@ -37,6 +37,8 @@ async function setUp(options: { configure?: boolean } = {}) {
         destination: context.testToken as Address,
       },
     ],
+    sourceChainSelector: SEPOLIA_SELECTOR.toString(),
+    destinationChainSelector: SEPOLIA_SELECTOR.toString(),
     expectedLatencySeconds: 0,
   };
   return { ...context, clients, deployment };
@@ -215,25 +217,34 @@ describe("Operator status", function () {
     const { viem, clients, deployment, outbox, inbox, testToken } = await setUp();
     const [, guardian] = await viem.getWalletClients();
 
-    await outbox.write.setGuardian([guardian.account.address]);
-    await outbox.write.setLimit([zeroAddress, true, 5n, BigInt(ONE_HOUR)]);
+    await outbox.write.setRole([
+      await outbox.read.GUARDIAN_ROLE(),
+      guardian.account.address,
+      true,
+    ]);
+    await outbox.write.setLimit([SEPOLIA_SELECTOR, zeroAddress, { enabled: true, capacity: 5n, refillAmount: 5n, refillPeriod: BigInt(ONE_HOUR) }]);
     await inbox.write.setReleaseDelay([BigInt(ONE_HOUR)]);
 
     const status = await readStatus(clients, deployment);
 
-    assert.equal(
-      status.outbox.guardian.toLowerCase(),
-      guardian.account.address.toLowerCase(),
+    // Role holders are derived from RoleSet events, since a mapping cannot be
+    // enumerated. Both the deployer and the new guardian hold it here.
+    assert.ok(
+      status.outbox.roles.GUARDIAN.includes(
+        guardian.account.address.toLowerCase() as `0x${string}`,
+      ),
     );
     assert.equal(status.outbox.paused, false);
     assert.equal(status.outbox.destinationGasLimit, 600000n);
+    assert.equal(status.outbox.trustDelay, 0n);
     assert.equal(status.inbox.releaseDelay, BigInt(ONE_HOUR));
 
     const deliveries = status.outbox.limits.find(
-      (limit) => limit.token === zeroAddress,
+      (limit) => limit.token === zeroAddress && limit.lane === SEPOLIA_SELECTOR,
     );
     assert.equal(deliveries?.enabled, true);
-    assert.equal(deliveries?.amountPerWindow, 5n);
+    assert.equal(deliveries?.capacity, 5n);
+    assert.equal(deliveries?.refillPeriod, BigInt(ONE_HOUR));
     assert.equal(deliveries?.remaining, 5n);
 
     // An unconfigured token bucket reports as unlimited.

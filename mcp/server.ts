@@ -48,6 +48,8 @@ function loadDeployment(): Deployment {
     outbox: parsed.outbox,
     inbox: parsed.inbox,
     tokens: parsed.tokens ?? [],
+    sourceChainSelector: parsed.sourceChainSelector,
+    destinationChainSelector: parsed.destinationChainSelector,
     expectedLatencySeconds: parsed.expectedLatencySeconds,
     fromBlock: parsed.fromBlock,
   };
@@ -96,7 +98,8 @@ server.registerTool(
   {
     title: "Gatehouse status",
     description:
-      "Read both desks of the Gatehouse CCIP bridge: owner, guardian, whether " +
+      "Read both desks of the Gatehouse CCIP bridge: owner, pending owner, role " +
+      "holders, the trust delay, whether " +
       "each side is paused, configured rate limits and how much of each window " +
       "budget remains, the destination gas limit, and the release delay. " +
       "Read-only.",
@@ -287,9 +290,9 @@ server.registerTool(
             : "Arriving deliveries revert and must be re-executed after " +
               "unpausing. Held cargo stops maturing: releaseCargo is blocked " +
               "while paused.",
-        callableBy: "the guardian or the owner",
+        callableBy: "any holder of GUARDIAN_ROLE, or the owner",
         nextStep:
-          "Review this, then submit it from the guardian key. This server " +
+          "Review this, then submit it from a guardian key. This server " +
           "cannot sign or send it.",
       });
     } catch (error) {

@@ -125,22 +125,32 @@ contract CcipWarehouseInbox is CCIPReceiver, WarehouseControls {
         uint64 sourceChainSelector,
         address sourceWarehouse,
         bool allowed
-    ) external onlyOwner {
+    ) external onlyRole(CONFIG_ROLE) {
+        _requireDelayIfWidening(allowed);
         allowedSourceWarehouse[sourceChainSelector][sourceWarehouse] = allowed;
         emit SourceWarehouseSet(sourceChainSelector, sourceWarehouse, allowed);
     }
 
     /// @notice Set the amount at or above which cargo waits out the delay.
+    /// @dev Raising the threshold, or setting it to zero, means fewer holds -
+    ///      so both are widening. Lowering it is tightening.
     function setLargeTransferThreshold(
         address token,
         uint256 threshold
-    ) external onlyOwner {
+    ) external onlyRole(CONFIG_ROLE) {
+        uint256 current = largeTransferThreshold[token];
+        bool widening = threshold == 0 ? current != 0 : (current == 0 || threshold > current);
+        _requireDelayIfWidening(widening);
+
         largeTransferThreshold[token] = threshold;
         emit LargeTransferThresholdSet(token, threshold);
     }
 
     /// @notice Set how long held cargo waits.
-    function setReleaseDelay(uint256 newReleaseDelay) external onlyOwner {
+    /// @dev A shorter hold gives operators less time to react, so shortening is
+    ///      widening. Lengthening is tightening.
+    function setReleaseDelay(uint256 newReleaseDelay) external onlyRole(CONFIG_ROLE) {
+        _requireDelayIfWidening(newReleaseDelay < releaseDelay);
         releaseDelay = newReleaseDelay;
         emit ReleaseDelaySet(newReleaseDelay);
     }
@@ -183,7 +193,7 @@ contract CcipWarehouseInbox is CCIPReceiver, WarehouseControls {
         address token,
         address to,
         uint256 amount
-    ) external onlyOwner {
+    ) external onlyRole(TREASURY_ROLE) {
         uint256 withdrawable = withdrawableCargo(token);
         if (amount > withdrawable) {
             revert CargoNotSettled(token, withdrawable, amount);
@@ -217,8 +227,8 @@ contract CcipWarehouseInbox is CCIPReceiver, WarehouseControls {
         }
         processedMessages[message.messageId] = true;
 
-        // Gate 5: does this fit in the current window's delivery budget?
-        _consumeLimit(MESSAGE_COUNT_BUCKET, 1);
+        // Gate 5: does this fit the delivery budget for this lane?
+        _consumeLimit(message.sourceChainSelector, MESSAGE_COUNT_BUCKET, 1);
 
         string memory text = abi.decode(message.data, (string));
 
@@ -242,7 +252,7 @@ contract CcipWarehouseInbox is CCIPReceiver, WarehouseControls {
             address token = message.destTokenAmounts[i].token;
             uint256 amount = message.destTokenAmounts[i].amount;
 
-            _consumeLimit(token, amount);
+            _consumeLimit(message.sourceChainSelector, token, amount);
 
             lastCargoToken = token;
             lastCargoAmount = amount;

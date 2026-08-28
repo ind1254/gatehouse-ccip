@@ -46,6 +46,8 @@ async function setUp(expectedLatencySeconds = EXPECTED_LATENCY) {
         destination: context.testToken as Address,
       },
     ],
+    sourceChainSelector: SEPOLIA_SELECTOR.toString(),
+    destinationChainSelector: SEPOLIA_SELECTOR.toString(),
     expectedLatencySeconds,
   };
   return { ...context, clients, deployment };

@@ -94,17 +94,24 @@ look young. This errs toward alerting, which is the correct direction for a tool
 whose job is catching silent failures — but it does accept false positives from a
 skewed host in exchange.
 
-## A7. The owner key is not compromised
+## A7. The admin keys are split, and somebody is watching
 
-Today a single key controls both desks' allowlists, limits, thresholds, and
-withdrawals.
+Powers are separated into guardian, config and treasury, the owner has no
+implicit bypass, and widening changes must be scheduled and wait out
+`trustDelay`. Two assumptions are buried in that.
 
-**If false.** Total loss. See T5 — this is the largest residual risk in the
-system and it is not mitigated.
+**That the roles were actually split.** A fresh deployment puts all three on the
+deployer and sets `trustDelay` to zero. Nothing forces an operator to separate
+them, so a deployment that skips that step has none of this protection while
+appearing to.
 
-**Why it is still like this.** Splitting roles and adding a timelock is real work
-that belongs after the system does something worth protecting. Recording the
-assumption is the honest interim position; pretending it is safe would not be.
+**That someone reacts inside the delay.** A scheduled widening emits
+`ActionScheduled` and a guardian can cancel it — but only if somebody sees it.
+An unwatched delay is a speed bump, not a control.
+
+**If false.** Total loss, as before. The delay changes the shape of T5 from
+instant to observable; it does not remove it. A multisig owner and alerting on
+`ActionScheduled` are the remaining work.
 
 ## A8. RPC providers answer truthfully and completely
 
