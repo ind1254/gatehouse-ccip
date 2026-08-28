@@ -17,6 +17,7 @@
     "test-support/**/*.ts",
     "src/**/*.ts",
     "cli/**/*.ts",
+    "mcp/**/*.ts",
     "artifacts/**/*.d.ts"
   ]
 }

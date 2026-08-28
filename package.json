@@ -9,7 +9,8 @@
     "typecheck": "hardhat build && tsc --noEmit",
     "node": "hardhat node",
     "deploy:local": "hardhat run scripts/deploy-local.ts --network localhost",
-    "gatehouse": "tsx cli/gatehouse.ts"
+    "gatehouse": "tsx cli/gatehouse.ts",
+    "mcp": "tsx mcp/server.ts"
   },
   "devDependencies": {
     "@chainlink/local": "^0.2.9",
@@ -20,5 +21,9 @@
     "tsx": "^4.20.6",
     "typescript": "^5.8.3",
     "viem": "^2.47.6"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.25.76"
   }
 }
